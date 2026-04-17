@@ -13,6 +13,9 @@ import json
 import os
 from typing import Any
 
+import secrets
+from datetime import datetime, timedelta, timezone
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -1925,47 +1928,139 @@ async def v2_geocode(payload: dict, user: UserContext = Depends(get_current_user
 
 @router.get("/analytics/graph")
 async def v2_analytics_graph(user: UserContext = Depends(get_current_user)):
-    """Network graph data — nodes + edges for broker ↔ deal ↔ market viz.
-    Returns D3-ready {nodes: [{id,type,label,value,meta}], links: [{source,target,weight}]}.
+    """Enriched network graph — brokers, deals, markets, asset classes.
+    Edges: broker↔deal, deal↔market, broker↔asset-class, broker↔broker (co-market).
+    Each node carries rich metadata for inspector panel.
     """
+    import datetime as _dt
+    import time as _time
+
     deals_resp = await v2_list_deals(user)
     brokers_resp = await v2_list_brokers(user)
     deals = deals_resp.get("deals", [])
     brokers = brokers_resp.get("brokers", [])
 
-    # Touchpoint counts per (deal,broker)
+    # Touchpoints — count + last-touched per (deal,broker) and per broker
     tp_counts: dict[tuple, int] = {}
+    last_touch_per_broker: dict[str, str] = {}
     try:
         tp_resp = await v2_query_touchpoints(user=user)
         for tp in tp_resp.get("touchpoints", []):
-            key = (tp.get("deal_id") or "", tp.get("broker_id") or "")
-            tp_counts[key] = tp_counts.get(key, 0) + 1
+            did = tp.get("deal_id") or ""
+            bid = tp.get("broker_id") or ""
+            if did and bid:
+                key = (did, bid)
+                tp_counts[key] = tp_counts.get(key, 0) + 1
+            ts = tp.get("sent_at") or tp.get("created_at")
+            if bid and ts:
+                prev = last_touch_per_broker.get(bid)
+                if not prev or ts > prev:
+                    last_touch_per_broker[bid] = ts
     except Exception:
         pass
 
+    now_ms = int(_time.time() * 1000)
+    _ICP_ASSETS = {"Multifamily", "MF", "Hotel", "RV", "MHP", "Self-Storage", "Industrial"}
+
+    def _days_since(iso_ts: str | None) -> int | None:
+        if not iso_ts:
+            return None
+        try:
+            dt = _dt.datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+            return max(0, (_dt.datetime.now(_dt.timezone.utc) - dt).days)
+        except Exception:
+            return None
+
+    # Index deals by broker + build broker→asset-class counts
+    deals_by_broker: dict[str, list] = {}
+    broker_asset_mix: dict[str, dict[str, int]] = {}
+    broker_states: dict[str, set] = {}
+    for d in deals:
+        bid = d.get("broker_id") or ""
+        if not bid:
+            continue
+        deals_by_broker.setdefault(bid, []).append(d)
+        ac = d.get("asset_class") or "Other"
+        broker_asset_mix.setdefault(bid, {})
+        broker_asset_mix[bid][ac] = broker_asset_mix[bid].get(ac, 0) + 1
+        st = (d.get("state") or "").upper()
+        if st:
+            broker_states.setdefault(bid, set()).add(st)
+
     nodes = []
+
+    # Broker nodes — enriched
     for b in brokers:
+        bid = b["id"]
+        bdeals = deals_by_broker.get(bid, [])
+        closed = sum(1 for d in bdeals if (d.get("status") or "").lower() == "closed")
+        active = sum(1 for d in bdeals if (d.get("status") or "").lower() not in ("closed", "dead"))
+        last_ts = last_touch_per_broker.get(bid)
+        asks = [float(d.get("ask_price") or 0) for d in bdeals if d.get("ask_price")]
+        avg_ask = (sum(asks) / len(asks)) if asks else 0
+        icp_hits = sum(1 for d in bdeals if (d.get("asset_class") or "") in _ICP_ASSETS)
         nodes.append({
-            "id": f"b:{b['id']}",
+            "id": f"b:{bid}",
             "type": "broker",
             "label": b.get("name") or "",
             "sublabel": b.get("firm") or "",
             "group": b.get("relationship_strength") or "Cold",
-            "value": max(1, sum(1 for d in deals if d.get("broker_id") == b["id"])),
+            "value": max(1, len(bdeals)),
+            "meta": {
+                "firm": b.get("firm"),
+                "tier": b.get("relationship_strength") or "Cold",
+                "total_deals": len(bdeals),
+                "closed": closed,
+                "active": active,
+                "avg_ask": round(avg_ask, 0),
+                "last_touch": last_ts,
+                "days_since_touch": _days_since(last_ts),
+                "icp_hits": icp_hits,
+                "asset_mix": broker_asset_mix.get(bid, {}),
+            },
         })
+
+    # Deal nodes — enriched
     markets: dict[str, int] = {}
+    market_value: dict[str, float] = {}
     for d in deals:
+        did = d["id"]
+        ac = d.get("asset_class") or "Other"
+        age = None
+        if d.get("date_created"):
+            try:
+                age = int((now_ms - int(d["date_created"])) / (1000 * 86400))
+            except Exception:
+                age = None
         nodes.append({
-            "id": f"d:{d['id']}",
+            "id": f"d:{did}",
             "type": "deal",
             "label": d.get("name") or "",
             "sublabel": d.get("status") or "",
             "group": (d.get("status") or "unknown").lower(),
             "value": 1,
+            "meta": {
+                "status": d.get("status"),
+                "asset_class": ac,
+                "state": d.get("state"),
+                "city": d.get("city"),
+                "ask_price": d.get("ask_price"),
+                "noi": d.get("noi"),
+                "cap_rate": d.get("cap_rate"),
+                "units": d.get("units"),
+                "age_days": age,
+                "broker_id": d.get("broker_id"),
+            },
         })
         mk = (d.get("state") or "").upper()
         if mk:
             markets[mk] = markets.get(mk, 0) + 1
+            try:
+                market_value[mk] = market_value.get(mk, 0) + float(d.get("ask_price") or 0)
+            except Exception:
+                pass
+
+    # Market nodes — enriched
     for mk, n in markets.items():
         nodes.append({
             "id": f"m:{mk}",
@@ -1974,9 +2069,27 @@ async def v2_analytics_graph(user: UserContext = Depends(get_current_user)):
             "sublabel": f"{n} deal(s)",
             "group": "market",
             "value": max(1, n),
+            "meta": {"deal_count": n, "total_value": round(market_value.get(mk, 0), 0)},
+        })
+
+    # Asset-class nodes — one per observed class (hubs)
+    asset_counts: dict[str, int] = {}
+    for d in deals:
+        ac = d.get("asset_class") or "Other"
+        asset_counts[ac] = asset_counts.get(ac, 0) + 1
+    for ac, n in asset_counts.items():
+        nodes.append({
+            "id": f"a:{ac}",
+            "type": "asset",
+            "label": ac,
+            "sublabel": f"{n} deal(s)",
+            "group": "asset",
+            "value": max(1, n),
+            "meta": {"deal_count": n, "icp": ac in _ICP_ASSETS},
         })
 
     links = []
+    # broker ↔ deal
     for d in deals:
         bid = d.get("broker_id")
         if bid:
@@ -1995,7 +2108,41 @@ async def v2_analytics_graph(user: UserContext = Depends(get_current_user)):
                 "kind": "deal-market",
             })
 
-    return {"nodes": nodes, "links": links, "counts": {"brokers": len(brokers), "deals": len(deals), "markets": len(markets)}}
+    # broker ↔ asset-class (aggregated from historical deals)
+    for bid, mix in broker_asset_mix.items():
+        for ac, cnt in mix.items():
+            links.append({
+                "source": f"b:{bid}",
+                "target": f"a:{ac}",
+                "weight": cnt,
+                "kind": "broker-asset",
+            })
+
+    # broker ↔ broker co-market — two brokers sharing same state(s)
+    b_list = list(broker_states.items())
+    for i in range(len(b_list)):
+        for j in range(i + 1, len(b_list)):
+            overlap = b_list[i][1] & b_list[j][1]
+            if overlap:
+                links.append({
+                    "source": f"b:{b_list[i][0]}",
+                    "target": f"b:{b_list[j][0]}",
+                    "weight": len(overlap),
+                    "kind": "broker-broker",
+                    "shared_markets": sorted(list(overlap)),
+                })
+
+    return {
+        "nodes": nodes,
+        "links": links,
+        "counts": {
+            "brokers": len(brokers),
+            "deals": len(deals),
+            "markets": len(markets),
+            "assets": len(asset_counts),
+            "edges": len(links),
+        },
+    }
 
 
 @router.get("/analytics/heatmap-activity")
@@ -2091,28 +2238,107 @@ async def v2_analytics_reports(user: UserContext = Depends(get_current_user)):
             pass
     avg_days = {s: (round(sum(v) / len(v), 1) if v else 0) for s, v in days_in_stage.items()}
 
-    # Broker leaderboard — richer
+    # Broker leaderboard — richer + multi-factor relationship score (0-100)
+    import math as _math
+
+    # Pull touchpoints once for recency + reply-rate calc
+    tp_by_broker: dict[str, list] = {}
+    try:
+        _tp_all = await v2_query_touchpoints(user=user)
+        for _tp in _tp_all.get("touchpoints", []):
+            _bid = _tp.get("broker_id")
+            if _bid:
+                tp_by_broker.setdefault(_bid, []).append(_tp)
+    except Exception:
+        pass
+
+    _ICP_ASSETS = {"Multifamily", "MF", "Hotel", "RV", "MHP", "Self-Storage", "Industrial"}
+    _TIER_BONUS = {"Hot": 5, "Trusted": 4, "Warm": 3, "New": 2, "Cold": 1}
+
+    def _days_since_iso(ts: str | None) -> float:
+        if not ts:
+            return 999.0
+        try:
+            dt = _dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            return max(0.0, (_dt.datetime.now(_dt.timezone.utc) - dt).total_seconds() / 86400.0)
+        except Exception:
+            return 999.0
+
     leaderboard = []
     for b in brokers:
         bid = b["id"]
         bdeals = [d for d in deals if d.get("broker_id") == bid]
+        n_deals = len(bdeals)
         closed = sum(1 for d in bdeals if (d.get("status") or "").lower() == "closed")
         active = sum(1 for d in bdeals if (d.get("status") or "").lower() not in ("closed", "dead"))
+        dead = sum(1 for d in bdeals if (d.get("status") or "").lower() == "dead")
         docs_in = sum(1 for d in bdeals if (d.get("status") or "").lower() in ("docs complete", "underwriting", "loi", "under contract", "closed"))
+
+        # Sub-score 1: volume (0-25) — log-scaled deal count
+        volume_score = round(min(25.0, 10.0 * _math.log1p(n_deals)), 1)
+
+        # Sub-score 2: quality (0-25) — close_rate × closed-count bonus
+        close_rate = (closed / n_deals) if n_deals else 0.0
+        quality_score = round(min(25.0, close_rate * 50.0 + closed * 5.0), 1)
+
+        # Sub-score 3: engagement (0-20) — docs-in rate + touchpoint volume (log)
+        docs_in_rate = (docs_in / n_deals) if n_deals else 0.0
+        tp_count = len(tp_by_broker.get(bid, []))
+        engagement_score = round(min(20.0, docs_in_rate * 12.0 + min(8.0, 2.0 * _math.log1p(tp_count))), 1)
+
+        # Sub-score 4: ICP alignment (0-15) — JPIG-preferred asset classes
+        icp_hits = sum(1 for d in bdeals if (d.get("asset_class") or "") in _ICP_ASSETS)
+        alignment_ratio = (icp_hits / n_deals) if n_deals else 0.0
+        alignment_score = round(min(15.0, alignment_ratio * 15.0), 1)
+
+        # Sub-score 5: recency (0-10) — exp decay on days since last touchpoint
+        last_ts = None
+        for _tp in tp_by_broker.get(bid, []):
+            _ts = _tp.get("sent_at") or _tp.get("created_at")
+            if _ts and (not last_ts or _ts > last_ts):
+                last_ts = _ts
+        days_since = _days_since_iso(last_ts)
+        # Full score inside 7 days, decay to ~0 by 90 days
+        recency_score = round(10.0 * _math.exp(-days_since / 30.0), 1) if days_since < 999 else 0.0
+
+        # Sub-score 6: tier bonus (0-5)
+        tier = b.get("relationship_strength") or "Cold"
+        tier_bonus = float(_TIER_BONUS.get(tier, 1))
+
+        total_score = round(volume_score + quality_score + engagement_score + alignment_score + recency_score + tier_bonus, 1)
+
+        # Avg deal size for reference
+        asks = [float(d.get("ask_price") or 0) for d in bdeals if d.get("ask_price")]
+        avg_ask = round((sum(asks) / len(asks)), 0) if asks else 0
+
         leaderboard.append({
             "broker_id": bid,
             "name": b.get("name"),
             "firm": b.get("firm"),
-            "tier": b.get("relationship_strength") or "Cold",
-            "total": len(bdeals),
+            "tier": tier,
+            "total": n_deals,
             "active": active,
             "closed": closed,
-            "total_deals": len(bdeals),
+            "dead": dead,
+            "total_deals": n_deals,
             "active_deals": active,
             "closed_deals": closed,
-            "docs_in_rate": round((docs_in / len(bdeals)) * 100, 1) if bdeals else 0,
-            "close_rate": round((closed / len(bdeals)) * 100, 1) if bdeals else 0,
-            "score": len(bdeals) * 10 + closed * 50 + docs_in * 5,
+            "docs_in_rate": round(docs_in_rate * 100, 1),
+            "close_rate": round(close_rate * 100, 1),
+            "icp_hits": icp_hits,
+            "icp_alignment_pct": round(alignment_ratio * 100, 1),
+            "avg_ask": avg_ask,
+            "touchpoints": tp_count,
+            "days_since_touch": round(days_since, 1) if days_since < 999 else None,
+            "score": total_score,
+            "score_breakdown": {
+                "volume": volume_score,
+                "quality": quality_score,
+                "engagement": engagement_score,
+                "alignment": alignment_score,
+                "recency": recency_score,
+                "tier_bonus": tier_bonus,
+            },
         })
     leaderboard.sort(key=lambda x: x["score"], reverse=True)
 
@@ -2308,10 +2534,680 @@ async def v2_admin_danger(payload: dict, user: UserContext = Depends(get_current
 
 @router.post("/admin/invite")
 async def v2_admin_invite(payload: dict, user: UserContext = Depends(get_current_user)):
-    """Log a team-invite request. Future: email the invite via Supabase auth."""
+    """Legacy single-team invite stub. See /teams/{team_id}/invitations for the
+    real multi-tenant flow below. Kept for backward compatibility with the old
+    Admin view.
+    """
     email = (payload or {}).get("email")
     role = (payload or {}).get("role") or "Analyst"
     if not email or "@" not in email:
         raise HTTPException(400, "valid email required")
-    # For now just echo — wiring to Supabase auth invite is a follow-up.
     return {"ok": True, "email": email, "role": role, "status": "queued"}
+
+
+# =============================================================
+# TEAMS / WORKSPACES
+# Multi-tenant collaboration: owner creates team, invites members by
+# email, assigns role (admin, member, viewer, or custom). Backend
+# enforces every permission check — RLS on these tables is read-only
+# (members can see their team). Writes use the service-role key so
+# the backend is the single source of truth for auth decisions.
+# =============================================================
+
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+
+def _require_service_role() -> None:
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(
+            503,
+            "SUPABASE_SERVICE_ROLE_KEY env var not set — teams API unavailable. "
+            "Add it in Render → Environment and redeploy.",
+        )
+
+
+async def _svc_request(
+    method: str,
+    path: str,
+    params: dict[str, str] | None = None,
+    body: Any = None,
+    prefer: str = "return=representation",
+) -> Any:
+    """HTTP call against Supabase REST using the service-role key.
+    Bypasses RLS — only called from backend after permission checks.
+    """
+    _require_service_role()
+    url = f"{SUPABASE_URL}/rest/v1/{path}"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Prefer": prefer,
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.request(
+            method, url, headers=headers, params=params or {}, json=body
+        )
+        if r.status_code not in (200, 201, 204):
+            raise HTTPException(
+                r.status_code, f"Supabase svc call failed: {r.text[:300]}"
+            )
+        if r.status_code == 204 or not r.text:
+            return None
+        try:
+            return r.json()
+        except Exception:
+            return None
+
+
+async def _svc_select(path: str, params: dict[str, str]) -> list[dict]:
+    rows = await _svc_request("GET", path, params=params)
+    return rows if isinstance(rows, list) else []
+
+
+async def _svc_insert(path: str, body: dict | list[dict]) -> list[dict]:
+    rows = await _svc_request("POST", path, body=body)
+    return rows if isinstance(rows, list) else ([rows] if rows else [])
+
+
+async def _svc_update(
+    path: str, params: dict[str, str], body: dict
+) -> list[dict]:
+    rows = await _svc_request("PATCH", path, params=params, body=body)
+    return rows if isinstance(rows, list) else ([rows] if rows else [])
+
+
+async def _svc_delete(path: str, params: dict[str, str]) -> None:
+    await _svc_request("DELETE", path, params=params, prefer="return=minimal")
+
+
+# ---------- Permission helpers ----------
+
+DEFAULT_ROLES = [
+    {
+        "name": "Owner",
+        "is_system": True,
+        "is_default": False,
+        "permissions": {
+            "admin": True,
+            "manage_members": True,
+            "manage_roles": True,
+            "manage_deals": True,
+            "view_analytics": True,
+        },
+    },
+    {
+        "name": "Admin",
+        "is_system": True,
+        "is_default": False,
+        "permissions": {
+            "admin": True,
+            "manage_members": True,
+            "manage_roles": True,
+            "manage_deals": True,
+            "view_analytics": True,
+        },
+    },
+    {
+        "name": "Member",
+        "is_system": True,
+        "is_default": True,
+        "permissions": {
+            "admin": False,
+            "manage_members": False,
+            "manage_roles": False,
+            "manage_deals": True,
+            "view_analytics": True,
+        },
+    },
+    {
+        "name": "Viewer",
+        "is_system": True,
+        "is_default": False,
+        "permissions": {
+            "admin": False,
+            "manage_members": False,
+            "manage_roles": False,
+            "manage_deals": False,
+            "view_analytics": True,
+        },
+    },
+]
+
+
+async def _get_team_or_404(team_id: str) -> dict:
+    rows = await _svc_select(
+        "teams", {"id": f"eq.{team_id}", "select": "*", "limit": "1"}
+    )
+    if not rows:
+        raise HTTPException(404, "Team not found")
+    return rows[0]
+
+
+async def _get_membership(team_id: str, user_id: str) -> dict | None:
+    rows = await _svc_select(
+        "team_members",
+        {
+            "team_id": f"eq.{team_id}",
+            "user_id": f"eq.{user_id}",
+            "select": "*,team_roles(*)",
+            "limit": "1",
+        },
+    )
+    return rows[0] if rows else None
+
+
+async def _require_member(team_id: str, user: UserContext) -> tuple[dict, dict]:
+    """Returns (team, membership). Raises 403 if user is not a member."""
+    team = await _get_team_or_404(team_id)
+    if team["owner_id"] == user.user_id:
+        # Owner is always a member; synthesize membership if row missing.
+        m = await _get_membership(team_id, user.user_id)
+        return team, (m or {"role_id": None, "team_roles": None, "is_owner": True})
+    m = await _get_membership(team_id, user.user_id)
+    if not m:
+        raise HTTPException(403, "Not a member of this team")
+    return team, m
+
+
+def _has_perm(team: dict, membership: dict, user: UserContext, perm: str) -> bool:
+    if team["owner_id"] == user.user_id:
+        return True
+    role = (membership or {}).get("team_roles") or {}
+    perms = role.get("permissions") or {}
+    return bool(perms.get("admin") or perms.get(perm))
+
+
+async def _require_perm(
+    team_id: str, user: UserContext, perm: str
+) -> tuple[dict, dict]:
+    team, m = await _require_member(team_id, user)
+    if not _has_perm(team, m, user, perm):
+        raise HTTPException(403, f"Missing permission: {perm}")
+    return team, m
+
+
+async def _ensure_default_roles(team_id: str) -> list[dict]:
+    existing = await _svc_select(
+        "team_roles", {"team_id": f"eq.{team_id}", "select": "*"}
+    )
+    existing_names = {r["name"] for r in existing}
+    to_insert = [
+        {
+            "team_id": team_id,
+            "name": r["name"],
+            "permissions": r["permissions"],
+            "is_default": r["is_default"],
+            "is_system": r["is_system"],
+        }
+        for r in DEFAULT_ROLES
+        if r["name"] not in existing_names
+    ]
+    if to_insert:
+        inserted = await _svc_insert("team_roles", to_insert)
+        existing = existing + inserted
+    return existing
+
+
+# ---------- Team CRUD ----------
+
+@router.get("/teams")
+async def v2_teams_list(user: UserContext = Depends(get_current_user)):
+    """All teams the user owns or is a member of."""
+    _require_service_role()
+    owned = await _svc_select(
+        "teams", {"owner_id": f"eq.{user.user_id}", "select": "*"}
+    )
+    memberships = await _svc_select(
+        "team_members",
+        {"user_id": f"eq.{user.user_id}", "select": "team_id,role_id,team_roles(name,permissions)"},
+    )
+    member_team_ids = [m["team_id"] for m in memberships]
+    member_teams: list[dict] = []
+    if member_team_ids:
+        member_teams = await _svc_select(
+            "teams",
+            {"id": f"in.({','.join(member_team_ids)})", "select": "*"},
+        )
+    seen: set[str] = set()
+    out: list[dict] = []
+    for t in owned + member_teams:
+        if t["id"] in seen:
+            continue
+        seen.add(t["id"])
+        mem = next((m for m in memberships if m["team_id"] == t["id"]), None)
+        role = (mem or {}).get("team_roles") or {}
+        t["role"] = role.get("name") or ("Owner" if t["owner_id"] == user.user_id else "Member")
+        t["is_owner"] = t["owner_id"] == user.user_id
+        t["permissions"] = role.get("permissions") or (
+            DEFAULT_ROLES[0]["permissions"] if t["is_owner"] else {}
+        )
+        out.append(t)
+    out.sort(key=lambda t: t.get("created_at") or "", reverse=True)
+    return {"teams": out}
+
+
+@router.post("/teams")
+async def v2_teams_create(
+    payload: dict, user: UserContext = Depends(get_current_user)
+):
+    """Create a new team. Caller becomes owner with full permissions."""
+    _require_service_role()
+    name = (payload or {}).get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    slug = (payload or {}).get("slug") or name.lower().replace(" ", "-")[:40]
+    rows = await _svc_insert(
+        "teams", {"name": name, "slug": slug, "owner_id": user.user_id}
+    )
+    team = rows[0]
+    roles = await _ensure_default_roles(team["id"])
+    owner_role = next((r for r in roles if r["name"] == "Owner"), roles[0])
+    await _svc_insert(
+        "team_members",
+        {
+            "team_id": team["id"],
+            "user_id": user.user_id,
+            "role_id": owner_role["id"],
+            "added_by": user.user_id,
+        },
+    )
+    team["role"] = "Owner"
+    team["is_owner"] = True
+    team["permissions"] = owner_role["permissions"]
+    return {"team": team}
+
+
+@router.get("/teams/{team_id}")
+async def v2_teams_get(team_id: str, user: UserContext = Depends(get_current_user)):
+    team, m = await _require_member(team_id, user)
+    role = (m or {}).get("team_roles") or {}
+    team["role"] = role.get("name") or ("Owner" if team["owner_id"] == user.user_id else "Member")
+    team["is_owner"] = team["owner_id"] == user.user_id
+    team["permissions"] = role.get("permissions") or (
+        DEFAULT_ROLES[0]["permissions"] if team["is_owner"] else {}
+    )
+    return {"team": team}
+
+
+@router.patch("/teams/{team_id}")
+async def v2_teams_update(
+    team_id: str, payload: dict, user: UserContext = Depends(get_current_user)
+):
+    await _require_perm(team_id, user, "admin")
+    updates: dict[str, Any] = {}
+    if "name" in payload and str(payload["name"]).strip():
+        updates["name"] = str(payload["name"]).strip()
+    if "slug" in payload and str(payload["slug"]).strip():
+        updates["slug"] = str(payload["slug"]).strip()
+    if not updates:
+        raise HTTPException(400, "Nothing to update")
+    rows = await _svc_update(
+        "teams", {"id": f"eq.{team_id}"}, updates
+    )
+    return {"team": rows[0] if rows else None}
+
+
+@router.delete("/teams/{team_id}")
+async def v2_teams_delete(team_id: str, user: UserContext = Depends(get_current_user)):
+    """Owner-only. Cascades to roles/members/invitations."""
+    team = await _get_team_or_404(team_id)
+    if team["owner_id"] != user.user_id:
+        raise HTTPException(403, "Only the owner can delete a team")
+    await _svc_delete("teams", {"id": f"eq.{team_id}"})
+    return {"ok": True}
+
+
+# ---------- Roles ----------
+
+@router.get("/teams/{team_id}/roles")
+async def v2_roles_list(team_id: str, user: UserContext = Depends(get_current_user)):
+    await _require_member(team_id, user)
+    roles = await _ensure_default_roles(team_id)
+    roles.sort(key=lambda r: (not r.get("is_system"), r.get("name", "")))
+    return {"roles": roles}
+
+
+@router.post("/teams/{team_id}/roles")
+async def v2_roles_create(
+    team_id: str, payload: dict, user: UserContext = Depends(get_current_user)
+):
+    await _require_perm(team_id, user, "manage_roles")
+    name = (payload or {}).get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "Role name required")
+    perms = (payload or {}).get("permissions") or {}
+    if not isinstance(perms, dict):
+        raise HTTPException(400, "permissions must be an object")
+    rows = await _svc_insert(
+        "team_roles",
+        {
+            "team_id": team_id,
+            "name": name,
+            "permissions": perms,
+            "is_default": False,
+            "is_system": False,
+        },
+    )
+    return {"role": rows[0] if rows else None}
+
+
+@router.patch("/teams/{team_id}/roles/{role_id}")
+async def v2_roles_update(
+    team_id: str,
+    role_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_perm(team_id, user, "manage_roles")
+    existing = await _svc_select(
+        "team_roles",
+        {"id": f"eq.{role_id}", "team_id": f"eq.{team_id}", "select": "*", "limit": "1"},
+    )
+    if not existing:
+        raise HTTPException(404, "Role not found in this team")
+    role = existing[0]
+    updates: dict[str, Any] = {}
+    if role.get("is_system") and role.get("name") == "Owner":
+        raise HTTPException(400, "Owner role cannot be edited")
+    if "name" in payload and str(payload["name"]).strip():
+        if role.get("is_system"):
+            raise HTTPException(400, "System role names cannot be renamed")
+        updates["name"] = str(payload["name"]).strip()
+    if "permissions" in payload and isinstance(payload["permissions"], dict):
+        updates["permissions"] = payload["permissions"]
+    if "is_default" in payload:
+        updates["is_default"] = bool(payload["is_default"])
+    if not updates:
+        raise HTTPException(400, "Nothing to update")
+    rows = await _svc_update(
+        "team_roles",
+        {"id": f"eq.{role_id}", "team_id": f"eq.{team_id}"},
+        updates,
+    )
+    return {"role": rows[0] if rows else None}
+
+
+@router.delete("/teams/{team_id}/roles/{role_id}")
+async def v2_roles_delete(
+    team_id: str,
+    role_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_perm(team_id, user, "manage_roles")
+    existing = await _svc_select(
+        "team_roles",
+        {"id": f"eq.{role_id}", "team_id": f"eq.{team_id}", "select": "*", "limit": "1"},
+    )
+    if not existing:
+        raise HTTPException(404, "Role not found in this team")
+    role = existing[0]
+    if role.get("is_system"):
+        raise HTTPException(400, "System roles (Owner/Admin/Member/Viewer) cannot be deleted")
+    # Any members on this role get reassigned to the default role.
+    all_roles = await _svc_select(
+        "team_roles", {"team_id": f"eq.{team_id}", "select": "*"}
+    )
+    default = next(
+        (r for r in all_roles if r.get("is_default") and r["id"] != role_id),
+        next((r for r in all_roles if r["name"] == "Member"), None),
+    )
+    if default:
+        await _svc_update(
+            "team_members",
+            {"team_id": f"eq.{team_id}", "role_id": f"eq.{role_id}"},
+            {"role_id": default["id"]},
+        )
+    await _svc_delete(
+        "team_roles", {"id": f"eq.{role_id}", "team_id": f"eq.{team_id}"}
+    )
+    return {"ok": True}
+
+
+# ---------- Members ----------
+
+@router.get("/teams/{team_id}/members")
+async def v2_members_list(
+    team_id: str, user: UserContext = Depends(get_current_user)
+):
+    await _require_member(team_id, user)
+    rows = await _svc_select(
+        "team_members",
+        {
+            "team_id": f"eq.{team_id}",
+            "select": "*,team_roles(id,name,permissions,is_system)",
+            "order": "added_at.asc",
+        },
+    )
+    # Look up emails/display names from auth.users — not accessible via REST,
+    # so we keep the user_id and let the frontend show it; team owner is tagged.
+    team = await _get_team_or_404(team_id)
+    for r in rows:
+        r["is_owner"] = r["user_id"] == team["owner_id"]
+    return {"members": rows, "owner_id": team["owner_id"]}
+
+
+@router.patch("/teams/{team_id}/members/{member_id}")
+async def v2_members_update(
+    team_id: str,
+    member_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_perm(team_id, user, "manage_members")
+    existing = await _svc_select(
+        "team_members",
+        {"id": f"eq.{member_id}", "team_id": f"eq.{team_id}", "select": "*", "limit": "1"},
+    )
+    if not existing:
+        raise HTTPException(404, "Member not found")
+    team = await _get_team_or_404(team_id)
+    if existing[0]["user_id"] == team["owner_id"]:
+        raise HTTPException(400, "Owner's role cannot be changed")
+    role_id = (payload or {}).get("role_id")
+    if not role_id:
+        raise HTTPException(400, "role_id required")
+    role_chk = await _svc_select(
+        "team_roles",
+        {"id": f"eq.{role_id}", "team_id": f"eq.{team_id}", "select": "id,name", "limit": "1"},
+    )
+    if not role_chk:
+        raise HTTPException(400, "role_id does not belong to this team")
+    rows = await _svc_update(
+        "team_members",
+        {"id": f"eq.{member_id}", "team_id": f"eq.{team_id}"},
+        {"role_id": role_id},
+    )
+    return {"member": rows[0] if rows else None}
+
+
+@router.delete("/teams/{team_id}/members/{member_id}")
+async def v2_members_delete(
+    team_id: str,
+    member_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    existing = await _svc_select(
+        "team_members",
+        {"id": f"eq.{member_id}", "team_id": f"eq.{team_id}", "select": "*", "limit": "1"},
+    )
+    if not existing:
+        raise HTTPException(404, "Member not found")
+    team = await _get_team_or_404(team_id)
+    target_user_id = existing[0]["user_id"]
+    if target_user_id == team["owner_id"]:
+        raise HTTPException(400, "Owner cannot be removed — transfer ownership or delete the team")
+    # Self-leave is allowed without manage_members permission.
+    if target_user_id != user.user_id:
+        await _require_perm(team_id, user, "manage_members")
+    await _svc_delete(
+        "team_members", {"id": f"eq.{member_id}", "team_id": f"eq.{team_id}"}
+    )
+    return {"ok": True}
+
+
+# ---------- Invitations ----------
+
+def _invite_url(request_host: str | None, token: str) -> str:
+    # Frontend opens /?invite=TOKEN and shows the accept-invite modal.
+    base = os.environ.get("PUBLIC_BASE_URL", "").strip()
+    if not base:
+        base = request_host or "https://brokerflow-eyt8.onrender.com"
+    base = base.rstrip("/")
+    return f"{base}/?invite={token}"
+
+
+@router.get("/teams/{team_id}/invitations")
+async def v2_invites_list(
+    team_id: str, user: UserContext = Depends(get_current_user)
+):
+    await _require_perm(team_id, user, "manage_members")
+    rows = await _svc_select(
+        "team_invitations",
+        {
+            "team_id": f"eq.{team_id}",
+            "select": "*,team_roles(name,permissions)",
+            "order": "created_at.desc",
+        },
+    )
+    for r in rows:
+        r["status"] = (
+            "accepted" if r.get("accepted_at")
+            else "revoked" if r.get("revoked_at")
+            else "expired" if r.get("expires_at") and r["expires_at"] < datetime.now(timezone.utc).isoformat()
+            else "pending"
+        )
+        r["invite_url"] = _invite_url(None, r["token"])
+    return {"invitations": rows}
+
+
+@router.post("/teams/{team_id}/invitations")
+async def v2_invites_create(
+    team_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_perm(team_id, user, "manage_members")
+    email = (payload or {}).get("email", "").strip().lower()
+    role_id = (payload or {}).get("role_id")
+    if not email or "@" not in email:
+        raise HTTPException(400, "valid email required")
+    if not role_id:
+        # Fall back to Member role.
+        roles = await _ensure_default_roles(team_id)
+        default = next((r for r in roles if r["name"] == "Member"), roles[0])
+        role_id = default["id"]
+    else:
+        role_chk = await _svc_select(
+            "team_roles",
+            {"id": f"eq.{role_id}", "team_id": f"eq.{team_id}", "select": "id", "limit": "1"},
+        )
+        if not role_chk:
+            raise HTTPException(400, "role_id does not belong to this team")
+    token = secrets.token_urlsafe(24)
+    expires = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
+    rows = await _svc_insert(
+        "team_invitations",
+        {
+            "team_id": team_id,
+            "email": email,
+            "role_id": role_id,
+            "token": token,
+            "invited_by": user.user_id,
+            "expires_at": expires,
+        },
+    )
+    inv = rows[0]
+    inv["invite_url"] = _invite_url(None, token)
+    return {"invitation": inv}
+
+
+@router.delete("/teams/{team_id}/invitations/{invite_id}")
+async def v2_invites_revoke(
+    team_id: str,
+    invite_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_perm(team_id, user, "manage_members")
+    await _svc_update(
+        "team_invitations",
+        {"id": f"eq.{invite_id}", "team_id": f"eq.{team_id}"},
+        {"revoked_at": datetime.now(timezone.utc).isoformat()},
+    )
+    return {"ok": True}
+
+
+@router.get("/invitations/{token}")
+async def v2_invite_preview(
+    token: str, user: UserContext = Depends(get_current_user)
+):
+    """Show invite details (team name, role) so the user can decide to accept."""
+    rows = await _svc_select(
+        "team_invitations",
+        {"token": f"eq.{token}", "select": "*,team_roles(name,permissions)", "limit": "1"},
+    )
+    if not rows:
+        raise HTTPException(404, "Invitation not found")
+    inv = rows[0]
+    if inv.get("accepted_at"):
+        raise HTTPException(410, "Invitation already accepted")
+    if inv.get("revoked_at"):
+        raise HTTPException(410, "Invitation was revoked")
+    if inv.get("expires_at") and inv["expires_at"] < datetime.now(timezone.utc).isoformat():
+        raise HTTPException(410, "Invitation expired")
+    team = await _get_team_or_404(inv["team_id"])
+    inv["team_name"] = team["name"]
+    inv["email_matches"] = (user.email or "").lower() == (inv.get("email") or "").lower()
+    return {"invitation": inv}
+
+
+@router.post("/invitations/{token}/accept")
+async def v2_invite_accept(
+    token: str, user: UserContext = Depends(get_current_user)
+):
+    rows = await _svc_select(
+        "team_invitations", {"token": f"eq.{token}", "select": "*", "limit": "1"}
+    )
+    if not rows:
+        raise HTTPException(404, "Invitation not found")
+    inv = rows[0]
+    if inv.get("accepted_at"):
+        raise HTTPException(410, "Invitation already accepted")
+    if inv.get("revoked_at"):
+        raise HTTPException(410, "Invitation was revoked")
+    if inv.get("expires_at") and inv["expires_at"] < datetime.now(timezone.utc).isoformat():
+        raise HTTPException(410, "Invitation expired")
+    if (user.email or "").lower() != (inv.get("email") or "").lower():
+        raise HTTPException(
+            403,
+            f"This invitation was sent to {inv.get('email')}. Sign in with that email to accept.",
+        )
+    # Upsert membership.
+    existing = await _get_membership(inv["team_id"], user.user_id)
+    if existing:
+        await _svc_update(
+            "team_members",
+            {"id": f"eq.{existing['id']}"},
+            {"role_id": inv.get("role_id")},
+        )
+    else:
+        await _svc_insert(
+            "team_members",
+            {
+                "team_id": inv["team_id"],
+                "user_id": user.user_id,
+                "role_id": inv.get("role_id"),
+                "added_by": inv.get("invited_by"),
+            },
+        )
+    await _svc_update(
+        "team_invitations",
+        {"id": f"eq.{inv['id']}"},
+        {
+            "accepted_at": datetime.now(timezone.utc).isoformat(),
+            "accepted_by": user.user_id,
+        },
+    )
+    team = await _get_team_or_404(inv["team_id"])
+    return {"ok": True, "team": team}
