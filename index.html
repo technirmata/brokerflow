@@ -2595,42 +2595,6 @@ function renderSubteamManagerModal() {
   document.querySelectorAll("[data-st-delete-role]").forEach(el => el.onclick = () => deleteSubteamRole(el.dataset.stDeleteRole));
 }
 
-function openSubteamRename() {
-  const st = (state.subteams || []).find(x => x.id === state.activeSubteamId);
-  if (!st) return;
-  $("compose-title").textContent = `Rename team · ${st.name}`;
-  $("compose-body").innerHTML = `
-    <div class="space-y-3">
-      <div>
-        <label class="text-xs text-gray-500">Team name</label>
-        <input id="rst-name" class="input" value="${esc(st.name)}" />
-      </div>
-      <div>
-        <label class="text-xs text-gray-500">Description</label>
-        <input id="rst-desc" class="input" value="${esc(st.description || "")}" />
-      </div>
-      <div class="flex gap-2 justify-end">
-        <button id="rst-cancel" class="btn-ghost">Cancel</button>
-        <button id="rst-save" class="btn">Save</button>
-      </div>
-    </div>`;
-  show("compose-modal");
-  $("rst-cancel").onclick = () => openSubteamManager(state.activeSubteamId);
-  $("rst-save").onclick = async () => {
-    const name = $("rst-name").value.trim();
-    const description = $("rst-desc").value.trim();
-    if (!name) return toast("Name required", "err");
-    try {
-      await apiJson("PATCH",
-        `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}`,
-        { name, description });
-      toast("Renamed");
-      await loadActiveTeamData();
-      openSubteamManager(state.activeSubteamId);
-    } catch (e) { toast("Rename failed: " + e.message, "err"); }
-  };
-}
-
 async function deleteActiveSubteam() {
   const st = (state.subteams || []).find(x => x.id === state.activeSubteamId);
   if (!st) return;
