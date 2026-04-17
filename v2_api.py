@@ -477,9 +477,192 @@ async def v2_space_lists(user: UserContext = Depends(get_current_user)):
     return {"space_id": user.config.get("clickup_space_id"), "lists": lists}
 
 
+# =============================================================
+# WorkspaceContext — multi-tenant data routing
+# =============================================================
+#
+# Every data endpoint (deals, brokers, touchpoints, links) resolves the
+# "active workspace" from the X-Workspace-Id request header. The workspace
+# owner's ClickUp/SMTP/Anthropic credentials are used to serve every
+# member of that workspace — so when a user joins a workspace, they see
+# the owner's deals, brokers, and history automatically (subject to role
+# permissions).
+#
+# Fallback: if no header is sent, we use the caller's own default
+# workspace (their oldest owned team) for backwards compatibility.
+
+from dataclasses import dataclass as _dataclass
+from fastapi import Header as _Header
+
+
+@_dataclass
+class WorkspaceContext:
+    caller: UserContext                # the logged-in user
+    owner: UserContext                 # workspace owner (with their config)
+    workspace: dict                    # teams row
+    membership: dict | None            # caller's team_members row (None if owner)
+    perms: set                         # permissions caller has in this workspace
+    workspace_id: str
+
+    @property
+    def is_owner(self) -> bool:
+        return self.caller.user_id == self.workspace.get("owner_id")
+
+    def has(self, perm: str) -> bool:
+        return self.is_owner or perm in self.perms or "admin" in self.perms
+
+
+async def _load_user_config_by_id(user_id: str) -> dict:
+    """Service-role read of a user's config. Used to get workspace
+    owner's ClickUp/SMTP/Anthropic keys to serve their members."""
+    rows = await _svc_select(
+        "user_configs",
+        {"user_id": f"eq.{user_id}", "select": "*", "limit": "1"},
+    )
+    return rows[0] if rows else {}
+
+
+async def _pick_default_workspace_id(user: UserContext) -> str | None:
+    # 1. Prefer an owned workspace (oldest first)
+    owned = await _svc_select(
+        "teams",
+        {
+            "owner_id": f"eq.{user.user_id}",
+            "select": "id",
+            "order": "created_at.asc",
+            "limit": "1",
+        },
+    )
+    if owned:
+        return owned[0]["id"]
+    # 2. Else any workspace the caller is a member of
+    mems = await _svc_select(
+        "team_members",
+        {"user_id": f"eq.{user.user_id}", "select": "team_id", "limit": "1"},
+    )
+    if mems:
+        return mems[0]["team_id"]
+    return None
+
+
+async def get_workspace_context(
+    x_workspace_id: str | None = _Header(default=None, alias="X-Workspace-Id"),
+    user: UserContext = Depends(get_current_user),
+) -> WorkspaceContext:
+    """FastAPI dependency that resolves (caller, owner, workspace, perms)
+    from the X-Workspace-Id header. Raises 403 if caller isn't a member."""
+    ws_id = (x_workspace_id or "").strip() or None
+    if not ws_id:
+        ws_id = await _pick_default_workspace_id(user)
+    if not ws_id:
+        raise HTTPException(404, "No active workspace — create or join one first")
+
+    team = await _get_team_or_404(ws_id)
+    owner_id = team.get("owner_id")
+
+    # Membership + perms
+    membership: dict | None = None
+    perms: set = set()
+    if owner_id == user.user_id:
+        perms = {"admin", "manage_members", "manage_roles", "manage_deals", "view_analytics"}
+    else:
+        m = await _get_membership(ws_id, user.user_id)
+        if not m:
+            raise HTTPException(403, "Not a member of this workspace")
+        membership = m
+        role = (m.get("team_roles") or {})
+        role_perms = role.get("permissions") or {}
+        perms = {k for k, v in role_perms.items() if v}
+
+    # Build owner context (for ClickUp / SMTP / AI keys)
+    if owner_id == user.user_id:
+        owner_ctx = user
+    else:
+        owner_cfg = await _load_user_config_by_id(owner_id)
+        # Synthetic UserContext — uses caller's JWT for any Supabase writes
+        # (RLS sees the caller) but owner's config for external credentials.
+        owner_ctx = UserContext(
+            user_id=owner_id,
+            email=owner_cfg.get("email") or "",
+            is_anonymous=False,
+            jwt=user.jwt,
+            config=owner_cfg,
+        )
+
+    return WorkspaceContext(
+        caller=user,
+        owner=owner_ctx,
+        workspace=team,
+        membership=membership,
+        perms=perms,
+        workspace_id=ws_id,
+    )
+
+
+def require_ws_perm(perm: str):
+    """Factory: returns a dependency that 403s if caller lacks perm."""
+    async def _dep(
+        wc: WorkspaceContext = Depends(get_workspace_context),
+    ) -> WorkspaceContext:
+        if not wc.has(perm):
+            raise HTTPException(403, f"Missing permission: {perm}")
+        return wc
+    return _dep
+
+
+async def _supabase_insert_ws(
+    wc: WorkspaceContext, table: str, data: dict
+) -> dict:
+    """Insert a row stamped with workspace_id + user_id (caller).
+
+    Uses the caller's JWT for RLS. workspace_id is the active workspace;
+    user_id records who created the row (for audit)."""
+    if not supabase_configured():
+        raise HTTPException(503, "Supabase not configured")
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {wc.caller.jwt}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+    data = {
+        "user_id": wc.caller.user_id,
+        "workspace_id": wc.workspace_id,
+        **data,
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.post(url, headers=headers, json=data)
+        if r.status_code not in (200, 201):
+            raise HTTPException(r.status_code, f"Supabase insert failed: {r.text[:200]}")
+        rows = r.json()
+        return rows[0] if rows else {}
+
+
+async def _supabase_rows_ws(
+    wc: WorkspaceContext, table: str, params: dict[str, str] | None = None
+) -> list[dict]:
+    """Read rows from a workspace-scoped table. Uses caller's JWT so RLS
+    applies. Caller must have already been verified as a workspace member
+    (by get_workspace_context)."""
+    if not supabase_configured():
+        return []
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = {
+        "apikey": SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {wc.caller.jwt}",
+        "Accept": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.get(url, headers=headers, params=params or {})
+        if r.status_code != 200:
+            return []
+        return r.json()
+
+
 @router.get("/deals")
-async def v2_list_deals(user: UserContext = Depends(get_current_user)):
-    """Return all deals from the connected space.
+async def v2_list_deals(wc: WorkspaceContext = Depends(get_workspace_context)):
+    """Return all deals from the workspace-owner's connected ClickUp space.
 
     Sourcing rules (in order):
       1. If user configured a specific `clickup_list_active_deals` AND it has tasks, use only that.
@@ -487,13 +670,14 @@ async def v2_list_deals(user: UserContext = Depends(get_current_user)):
          brokers/contacts/sops/templates. Each task is tagged with its source list name.
     """
     task_to_deal, _, _ = _lazy_mappers()
+    owner = wc.owner
 
     # Try configured list first
-    if user.list_deals:
+    if owner.list_deals:
         try:
             r = await user_cu_get(
-                user,
-                f"/list/{user.list_deals}/task",
+                owner,
+                f"/list/{owner.list_deals}/task",
                 params={"include_closed": "true", "subtasks": "true"},
             )
             tasks = r.get("tasks", []) or []
@@ -503,7 +687,7 @@ async def v2_list_deals(user: UserContext = Depends(get_current_user)):
             pass
 
     # Fall back to space-wide union
-    lists = await _fetch_space_lists(user)
+    lists = await _fetch_space_lists(owner)
     deals: list[dict] = []
     for l in lists:
         if _classify_list(l.get("name", "")) != "deals":
@@ -511,7 +695,7 @@ async def v2_list_deals(user: UserContext = Depends(get_current_user)):
         list_id = l["id"]
         list_name = l.get("name", "")
         folder_name = l.get("folder_name")
-        tasks = await _fetch_tasks_for_list(user, list_id)
+        tasks = await _fetch_tasks_for_list(owner, list_id)
         for t in tasks:
             d = task_to_deal(t)
             d["source_list_id"] = list_id
@@ -522,19 +706,20 @@ async def v2_list_deals(user: UserContext = Depends(get_current_user)):
 
 
 @router.get("/brokers")
-async def v2_list_brokers(user: UserContext = Depends(get_current_user)):
-    """Return all brokers from the connected space.
+async def v2_list_brokers(wc: WorkspaceContext = Depends(get_workspace_context)):
+    """Return all brokers from the workspace-owner's connected space.
 
     Sourcing rules (in order):
-      1. If user configured a specific `clickup_list_brokers` AND it has tasks, use only that.
+      1. If owner configured a specific `clickup_list_brokers` AND it has tasks, use only that.
       2. Else, union every list in the configured space whose name looks like brokers/contacts/people.
     """
     _, task_to_broker, _ = _lazy_mappers()
+    owner = wc.owner
 
-    if user.list_brokers:
+    if owner.list_brokers:
         try:
             r = await user_cu_get(
-                user, f"/list/{user.list_brokers}/task", params={"include_closed": "true"}
+                owner, f"/list/{owner.list_brokers}/task", params={"include_closed": "true"}
             )
             tasks = r.get("tasks", []) or []
             if tasks:
@@ -542,7 +727,7 @@ async def v2_list_brokers(user: UserContext = Depends(get_current_user)):
         except Exception:
             pass
 
-    lists = await _fetch_space_lists(user)
+    lists = await _fetch_space_lists(owner)
     brokers: list[dict] = []
     for l in lists:
         if _classify_list(l.get("name", "")) != "brokers":
@@ -550,7 +735,7 @@ async def v2_list_brokers(user: UserContext = Depends(get_current_user)):
         list_id = l["id"]
         list_name = l.get("name", "")
         folder_name = l.get("folder_name")
-        tasks = await _fetch_tasks_for_list(user, list_id)
+        tasks = await _fetch_tasks_for_list(owner, list_id)
         for t in tasks:
             b = task_to_broker(t)
             b["source_list_id"] = list_id
@@ -561,13 +746,14 @@ async def v2_list_brokers(user: UserContext = Depends(get_current_user)):
 
 
 @router.get("/followups")
-async def v2_list_followups(user: UserContext = Depends(get_current_user)):
-    if not user.list_followups:
+async def v2_list_followups(wc: WorkspaceContext = Depends(get_workspace_context)):
+    owner = wc.owner
+    if not owner.list_followups:
         return {"followups": [], "source": "not_configured"}
     _, _, task_to_followup = _lazy_mappers()
     try:
         resp = await user_cu_get(
-            user, f"/list/{user.list_followups}/task", params={"include_closed": "true"}
+            owner, f"/list/{owner.list_followups}/task", params={"include_closed": "true"}
         )
         return {"followups": [task_to_followup(t) for t in resp.get("tasks", [])], "source": "configured_list"}
     except Exception:
@@ -579,10 +765,11 @@ async def v2_list_followups(user: UserContext = Depends(get_current_user)):
 # =============================================================
 
 @router.get("/deals/{deal_id}/full")
-async def v2_deal_full(deal_id: str, user: UserContext = Depends(get_current_user)):
-    """Deal + linked broker(s) + recent touchpoints."""
+async def v2_deal_full(deal_id: str, wc: WorkspaceContext = Depends(get_workspace_context)):
+    """Deal + linked broker(s) + recent touchpoints (workspace-scoped)."""
     task_to_deal, task_to_broker, _ = _lazy_mappers()
-    task = await user_cu_get(user, f"/task/{deal_id}")
+    owner = wc.owner
+    task = await user_cu_get(owner, f"/task/{deal_id}")
     deal = task_to_deal(task)
 
     brokers = []
@@ -590,11 +777,11 @@ async def v2_deal_full(deal_id: str, user: UserContext = Depends(get_current_use
     if deal.get("broker_id"):
         broker_ids.append(deal["broker_id"])
 
-    # Also query deal_broker_links for many-to-many
-    link_rows = await _supabase_rows(
-        user,
+    # Also query deal_broker_links for many-to-many (scoped to workspace)
+    link_rows = await _supabase_rows_ws(
+        wc,
         "deal_broker_links",
-        params={"user_id": f"eq.{user.user_id}", "deal_id": f"eq.{deal_id}"},
+        params={"workspace_id": f"eq.{wc.workspace_id}", "deal_id": f"eq.{deal_id}"},
     )
     for row in link_rows:
         bid = row.get("broker_id")
@@ -603,16 +790,16 @@ async def v2_deal_full(deal_id: str, user: UserContext = Depends(get_current_use
 
     for bid in broker_ids:
         try:
-            btask = await user_cu_get(user, f"/task/{bid}")
+            btask = await user_cu_get(owner, f"/task/{bid}")
             brokers.append(task_to_broker(btask))
         except Exception:
             continue
 
-    touchpoints = await _supabase_rows(
-        user,
+    touchpoints = await _supabase_rows_ws(
+        wc,
         "touchpoints",
         params={
-            "user_id": f"eq.{user.user_id}",
+            "workspace_id": f"eq.{wc.workspace_id}",
             "deal_id": f"eq.{deal_id}",
             "order": "occurred_at.desc",
             "limit": "50",
@@ -623,44 +810,45 @@ async def v2_deal_full(deal_id: str, user: UserContext = Depends(get_current_use
 
 
 @router.get("/brokers/{broker_id}/full")
-async def v2_broker_full(broker_id: str, user: UserContext = Depends(get_current_user)):
-    """Broker + associated deals + full activity timeline."""
+async def v2_broker_full(broker_id: str, wc: WorkspaceContext = Depends(get_workspace_context)):
+    """Broker + associated deals + full activity timeline (workspace-scoped)."""
     task_to_deal, task_to_broker, _ = _lazy_mappers()
-    task = await user_cu_get(user, f"/task/{broker_id}")
+    owner = wc.owner
+    task = await user_cu_get(owner, f"/task/{broker_id}")
     broker = task_to_broker(task)
 
     # All deals with this broker_id
     deals: list[dict] = []
-    if user.list_deals:
+    if owner.list_deals:
         resp = await user_cu_get(
-            user, f"/list/{user.list_deals}/task", params={"include_closed": "true"}
+            owner, f"/list/{owner.list_deals}/task", params={"include_closed": "true"}
         )
         for t in resp.get("tasks", []):
             d = task_to_deal(t)
             if d.get("broker_id") == broker_id:
                 deals.append(d)
 
-    # Plus from deal_broker_links
-    link_rows = await _supabase_rows(
-        user,
+    # Plus from deal_broker_links (workspace-scoped)
+    link_rows = await _supabase_rows_ws(
+        wc,
         "deal_broker_links",
-        params={"user_id": f"eq.{user.user_id}", "broker_id": f"eq.{broker_id}"},
+        params={"workspace_id": f"eq.{wc.workspace_id}", "broker_id": f"eq.{broker_id}"},
     )
     linked_deal_ids = {r["deal_id"] for r in link_rows}
     for did in linked_deal_ids:
         if any(d["id"] == did for d in deals):
             continue
         try:
-            t = await user_cu_get(user, f"/task/{did}")
+            t = await user_cu_get(owner, f"/task/{did}")
             deals.append(task_to_deal(t))
         except Exception:
             continue
 
-    touchpoints = await _supabase_rows(
-        user,
+    touchpoints = await _supabase_rows_ws(
+        wc,
         "touchpoints",
         params={
-            "user_id": f"eq.{user.user_id}",
+            "workspace_id": f"eq.{wc.workspace_id}",
             "broker_id": f"eq.{broker_id}",
             "order": "occurred_at.desc",
             "limit": "200",
@@ -684,9 +872,9 @@ async def v2_broker_full(broker_id: str, user: UserContext = Depends(get_current
 @router.post("/touchpoints")
 async def v2_log_touchpoint(
     payload: dict,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
-    """Log a manual or auto touchpoint.
+    """Log a manual or auto touchpoint (workspace-scoped).
     payload: { broker_id, broker_name?, broker_email?, broker_phone?,
                deal_id?, deal_name?,
                channel: email|sms|call|note,
@@ -695,12 +883,16 @@ async def v2_log_touchpoint(
                source?: manual|dashboard|gmail_scan|twilio_webhook|smtp,
                occurred_at?: iso timestamp }
     """
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
+
     required = ["broker_id", "channel", "direction"]
     for k in required:
         if not payload.get(k):
             raise HTTPException(400, f"Missing field: {k}")
 
-    row = await _supabase_insert(user, "touchpoints", payload)
+    # Stamps workspace_id + user_id (caller) automatically
+    row = await _supabase_insert_ws(wc, "touchpoints", payload)
     return row
 
 
@@ -709,10 +901,10 @@ async def v2_query_touchpoints(
     broker_id: str | None = None,
     deal_id: str | None = None,
     limit: int = 100,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
     params: dict[str, str] = {
-        "user_id": f"eq.{user.user_id}",
+        "workspace_id": f"eq.{wc.workspace_id}",
         "order": "occurred_at.desc",
         "limit": str(limit),
     }
@@ -720,19 +912,21 @@ async def v2_query_touchpoints(
         params["broker_id"] = f"eq.{broker_id}"
     if deal_id:
         params["deal_id"] = f"eq.{deal_id}"
-    rows = await _supabase_rows(user, "touchpoints", params=params)
+    rows = await _supabase_rows_ws(wc, "touchpoints", params=params)
     return {"touchpoints": rows}
 
 
 @router.delete("/touchpoints/{touchpoint_id}")
 async def v2_delete_touchpoint(
     touchpoint_id: str,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
     await _supabase_delete(
-        user,
+        wc.caller,
         "touchpoints",
-        params={"id": f"eq.{touchpoint_id}", "user_id": f"eq.{user.user_id}"},
+        params={"id": f"eq.{touchpoint_id}", "workspace_id": f"eq.{wc.workspace_id}"},
     )
     return {"ok": True}
 
@@ -744,12 +938,13 @@ async def v2_delete_touchpoint(
 @router.post("/draft/email")
 async def v2_draft_email(
     payload: dict,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
     """Generate a warm, JPIG-voiced doc-request / reminder email.
     payload: { broker_id, deal_id?, cadence_day?, purpose?, extra_context? }
     """
-    key = user.config.get("anthropic_api_key")
+    owner = wc.owner
+    key = owner.config.get("anthropic_api_key")
     if not key:
         raise HTTPException(400, "Anthropic key not set. Add it in Settings.")
 
@@ -758,14 +953,14 @@ async def v2_draft_email(
         raise HTTPException(400, "broker_id required")
 
     _, task_to_broker, _ = _lazy_mappers()
-    broker_task = await user_cu_get(user, f"/task/{broker_id}")
+    broker_task = await user_cu_get(owner, f"/task/{broker_id}")
     broker = task_to_broker(broker_task)
 
     deal_ctx = ""
     if payload.get("deal_id"):
         task_to_deal, _, _ = _lazy_mappers()
         try:
-            deal_task = await user_cu_get(user, f"/task/{payload['deal_id']}")
+            deal_task = await user_cu_get(owner, f"/task/{payload['deal_id']}")
             deal = task_to_deal(deal_task)
             deal_ctx = (
                 f"Deal: {deal.get('name','')}\n"
@@ -778,12 +973,12 @@ async def v2_draft_email(
         except Exception:
             pass
 
-    # Recent conversation context
-    recent_tps = await _supabase_rows(
-        user,
+    # Recent conversation context (workspace-scoped)
+    recent_tps = await _supabase_rows_ws(
+        wc,
         "touchpoints",
         params={
-            "user_id": f"eq.{user.user_id}",
+            "workspace_id": f"eq.{wc.workspace_id}",
             "broker_id": f"eq.{broker_id}",
             "order": "occurred_at.desc",
             "limit": "5",
@@ -869,10 +1064,11 @@ Return JSON: {{"subject": "...", "body": "..."}}"""
 @router.post("/draft/sms")
 async def v2_draft_sms(
     payload: dict,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
     """Generate a short SMS. payload: { broker_id, deal_id?, purpose? }"""
-    key = user.config.get("anthropic_api_key")
+    owner = wc.owner
+    key = owner.config.get("anthropic_api_key")
     if not key:
         raise HTTPException(400, "Anthropic key not set.")
 
@@ -881,7 +1077,7 @@ async def v2_draft_sms(
         raise HTTPException(400, "broker_id required")
 
     _, task_to_broker, _ = _lazy_mappers()
-    broker_task = await user_cu_get(user, f"/task/{broker_id}")
+    broker_task = await user_cu_get(owner, f"/task/{broker_id}")
     broker = task_to_broker(broker_task)
 
     purpose = payload.get("purpose", "quick check-in")
@@ -920,11 +1116,14 @@ async def v2_draft_sms(
 @router.post("/send/email")
 async def v2_send_email(
     payload: dict,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
-    """Send an email via user's SMTP config. Logs a touchpoint.
+    """Send an email via workspace owner's SMTP config. Logs a workspace-scoped touchpoint.
     payload: { to, subject, body, broker_id?, deal_id? }
     """
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
+
     import smtplib
     from email.mime.text import MIMEText
     from email.utils import formatdate, make_msgid
@@ -935,11 +1134,12 @@ async def v2_send_email(
     if not all([to, subject, body]):
         raise HTTPException(400, "to, subject, body required")
 
-    host = user.config.get("smtp_host")
-    port = user.config.get("smtp_port") or 587
-    smtp_user = user.config.get("smtp_user")
-    pw = user.config.get("smtp_pass")
-    smtp_from = user.config.get("smtp_from") or smtp_user
+    owner = wc.owner
+    host = owner.config.get("smtp_host")
+    port = owner.config.get("smtp_port") or 587
+    smtp_user = owner.config.get("smtp_user")
+    pw = owner.config.get("smtp_pass")
+    smtp_from = owner.config.get("smtp_from") or smtp_user
     if not all([host, smtp_user, pw]):
         raise HTTPException(400, "SMTP not configured. Run wizard.")
 
@@ -958,9 +1158,8 @@ async def v2_send_email(
     except Exception as e:
         raise HTTPException(502, f"SMTP send failed: {e}")
 
-    # Log touchpoint
+    # Log touchpoint (workspace-scoped; user_id + workspace_id stamped by helper)
     tp_data = {
-        "user_id": user.user_id,
         "channel": "email",
         "direction": "outbound",
         "source": "smtp",
@@ -976,26 +1175,30 @@ async def v2_send_email(
         tp_data["deal_id"] = payload["deal_id"]
     tp_data["broker_email"] = to
 
-    touchpoint = await _supabase_insert(user, "touchpoints", tp_data)
+    touchpoint = await _supabase_insert_ws(wc, "touchpoints", tp_data)
     return {"ok": True, "touchpoint": touchpoint}
 
 
 @router.post("/send/sms")
 async def v2_send_sms(
     payload: dict,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
-    """Send SMS via Twilio. Logs a touchpoint.
+    """Send SMS via workspace owner's Twilio. Logs a workspace-scoped touchpoint.
     payload: { to, body, broker_id?, deal_id? }
     """
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
+
     to = payload.get("to", "").strip()
     body = payload.get("body", "").strip()
     if not all([to, body]):
         raise HTTPException(400, "to, body required")
 
-    sid = user.config.get("twilio_account_sid")
-    token = user.config.get("twilio_auth_token")
-    from_number = user.config.get("twilio_from_number")
+    owner = wc.owner
+    sid = owner.config.get("twilio_account_sid")
+    token = owner.config.get("twilio_auth_token")
+    from_number = owner.config.get("twilio_from_number")
     if not all([sid, token, from_number]):
         raise HTTPException(400, "Twilio not configured.")
 
@@ -1010,7 +1213,6 @@ async def v2_send_sms(
         msg = r.json()
 
     tp_data = {
-        "user_id": user.user_id,
         "channel": "sms",
         "direction": "outbound",
         "source": "twilio_webhook",
@@ -1025,7 +1227,7 @@ async def v2_send_sms(
     if payload.get("deal_id"):
         tp_data["deal_id"] = payload["deal_id"]
 
-    touchpoint = await _supabase_insert(user, "touchpoints", tp_data)
+    touchpoint = await _supabase_insert_ws(wc, "touchpoints", tp_data)
     return {"ok": True, "sid": msg.get("sid"), "touchpoint": touchpoint}
 
 
@@ -1097,16 +1299,18 @@ async def _supabase_delete(
 @router.post("/deal-broker-links")
 async def v2_link_deal_broker(
     payload: dict,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
     """Link a deal to a broker (or multiple brokers).
     payload: { deal_id, broker_id, role? }
     """
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
     for k in ("deal_id", "broker_id"):
         if not payload.get(k):
             raise HTTPException(400, f"Missing {k}")
-    row = await _supabase_insert(
-        user,
+    row = await _supabase_insert_ws(
+        wc,
         "deal_broker_links",
         {
             "deal_id": payload["deal_id"],
@@ -1121,23 +1325,25 @@ async def v2_link_deal_broker(
 async def v2_list_links(
     deal_id: str | None = None,
     broker_id: str | None = None,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
-    params: dict[str, str] = {"user_id": f"eq.{user.user_id}"}
+    params: dict[str, str] = {"workspace_id": f"eq.{wc.workspace_id}"}
     if deal_id:
         params["deal_id"] = f"eq.{deal_id}"
     if broker_id:
         params["broker_id"] = f"eq.{broker_id}"
-    rows = await _supabase_rows(user, "deal_broker_links", params=params)
+    rows = await _supabase_rows_ws(wc, "deal_broker_links", params=params)
     return {"links": rows}
 
 
 @router.delete("/deal-broker-links/{link_id}")
-async def v2_unlink(link_id: str, user: UserContext = Depends(get_current_user)):
+async def v2_unlink(link_id: str, wc: WorkspaceContext = Depends(get_workspace_context)):
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
     await _supabase_delete(
-        user,
+        wc.caller,
         "deal_broker_links",
-        params={"id": f"eq.{link_id}", "user_id": f"eq.{user.user_id}"},
+        params={"id": f"eq.{link_id}", "workspace_id": f"eq.{wc.workspace_id}"},
     )
     return {"ok": True}
 
@@ -1226,18 +1432,22 @@ PRIORITY_MAP = {"urgent": 1, "high": 2, "normal": 3, "low": 4}
 @router.post("/deals")
 async def v2_create_deal(
     payload: dict,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
-    """Create a deal as a ClickUp task. Packs structured fields into description JSON block.
+    """Create a deal as a ClickUp task in the workspace owner's space.
     payload: any of {name, status, priority, tags, deal_id, asset_class, city, state,
                      units, ask_price, noi, cap_rate, broker_id, doc_status,
                      docs_received, docs_outstanding, next_action, next_action_date,
                      source, stage_entered, description_prose, list_id?}
     """
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
+
     pack_data, _, _ = _pack_helpers()
     task_to_deal, _, _ = _lazy_mappers()
+    owner = wc.owner
 
-    list_id = payload.get("list_id") or await _resolve_deals_list_id(user)
+    list_id = payload.get("list_id") or await _resolve_deals_list_id(owner)
     name = (
         payload.get("name")
         or f"{payload.get('deal_id','JPIG-???')} · {payload.get('city','')}, {payload.get('state','')}"
@@ -1256,7 +1466,7 @@ async def v2_create_deal(
     if "tags" in payload:
         body["tags"] = payload["tags"]
 
-    task = await user_cu_post(user, f"/list/{list_id}/task", body)
+    task = await user_cu_post(owner, f"/list/{list_id}/task", body)
     deal = task_to_deal(task)
     deal["source_list_id"] = list_id
     return deal
@@ -1266,13 +1476,18 @@ async def v2_create_deal(
 async def v2_update_deal(
     task_id: str,
     payload: dict,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
-    """Patch a deal. Merges structured fields; preserves prose unless overridden."""
+    """Patch a deal in the workspace owner's ClickUp. Merges structured fields;
+    preserves prose unless overridden."""
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
+
     pack_data, strip_data, extract_data = _pack_helpers()
     task_to_deal, _, _ = _lazy_mappers()
+    owner = wc.owner
 
-    existing = await user_cu_get(user, f"/task/{task_id}")
+    existing = await user_cu_get(owner, f"/task/{task_id}")
     existing_desc = existing.get("description", "") or ""
     current_data = extract_data(existing_desc)
 
@@ -1288,16 +1503,18 @@ async def v2_update_deal(
     if "priority" in payload:
         body["priority"] = PRIORITY_MAP.get(payload["priority"], 3)
 
-    task = await user_cu_put(user, f"/task/{task_id}", body)
+    task = await user_cu_put(owner, f"/task/{task_id}", body)
     return task_to_deal(task)
 
 
 @router.delete("/deals/{task_id}")
 async def v2_delete_deal(
     task_id: str,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
-    await user_cu_delete(user, f"/task/{task_id}")
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
+    await user_cu_delete(wc.owner, f"/task/{task_id}")
     return {"ok": True}
 
 
@@ -1308,23 +1525,27 @@ async def v2_delete_deal(
 @router.post("/brokers")
 async def v2_create_broker(
     payload: dict,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
-    """Create a broker record in ClickUp. Structured fields go in JSON block.
+    """Create a broker record in workspace owner's ClickUp. Structured fields go in JSON block.
     payload: {name, firm?, region?, email?, phone?, relationship_strength?,
               preferred_assets?, notes?, list_id?}
     """
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
+
     pack_data, _, _ = _pack_helpers()
     _, task_to_broker, _ = _lazy_mappers()
+    owner = wc.owner
 
-    list_id = payload.get("list_id") or await _resolve_brokers_list_id(user)
+    list_id = payload.get("list_id") or await _resolve_brokers_list_id(owner)
     name = (payload.get("name") or payload.get("firm") or "Unnamed broker").strip()
     reserved = {"name", "notes", "list_id"}
     data = {k: v for k, v in payload.items() if k not in reserved}
     prose = payload.get("notes", "")
     body = {"name": name, "description": pack_data(prose, data)}
 
-    task = await user_cu_post(user, f"/list/{list_id}/task", body)
+    task = await user_cu_post(owner, f"/list/{list_id}/task", body)
     broker = task_to_broker(task)
     broker["source_list_id"] = list_id
     return broker
@@ -1334,12 +1555,16 @@ async def v2_create_broker(
 async def v2_update_broker(
     task_id: str,
     payload: dict,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
+
     pack_data, strip_data, extract_data = _pack_helpers()
     _, task_to_broker, _ = _lazy_mappers()
+    owner = wc.owner
 
-    existing = await user_cu_get(user, f"/task/{task_id}")
+    existing = await user_cu_get(owner, f"/task/{task_id}")
     existing_desc = existing.get("description", "") or ""
     current_data = extract_data(existing_desc)
 
@@ -1351,16 +1576,18 @@ async def v2_update_broker(
     if "name" in payload:
         body["name"] = payload["name"]
 
-    task = await user_cu_put(user, f"/task/{task_id}", body)
+    task = await user_cu_put(owner, f"/task/{task_id}", body)
     return task_to_broker(task)
 
 
 @router.delete("/brokers/{task_id}")
 async def v2_delete_broker(
     task_id: str,
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
-    await user_cu_delete(user, f"/task/{task_id}")
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
+    await user_cu_delete(wc.owner, f"/task/{task_id}")
     return {"ok": True}
 
 
@@ -1462,16 +1689,20 @@ async def v2_docs_parse(
 # =============================================================
 
 @router.post("/seed/sample-brokers")
-async def v2_seed_sample_brokers(user: UserContext = Depends(get_current_user)):
-    """Create 5 sample brokers in the user's broker list. Idempotent by name."""
+async def v2_seed_sample_brokers(wc: WorkspaceContext = Depends(get_workspace_context)):
+    """Create 5 sample brokers in the workspace owner's broker list. Idempotent by name."""
+    if not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: manage_deals")
+
     pack_data, _, _ = _pack_helpers()
     _, task_to_broker, _ = _lazy_mappers()
+    owner = wc.owner
 
-    list_id = await _resolve_brokers_list_id(user)
+    list_id = await _resolve_brokers_list_id(owner)
 
     # Check existing names to avoid dupes
     existing = await user_cu_get(
-        user, f"/list/{list_id}/task", params={"include_closed": "true"}
+        owner, f"/list/{list_id}/task", params={"include_closed": "true"}
     )
     existing_names = {t.get("name", "").lower() for t in existing.get("tasks", []) or []}
 
@@ -1499,7 +1730,7 @@ async def v2_seed_sample_brokers(user: UserContext = Depends(get_current_user)):
             continue
         data = {k: v for k, v in s.items() if k != "name"}
         body = {"name": s["name"], "description": pack_data("", data)}
-        task = await user_cu_post(user, f"/list/{list_id}/task", body)
+        task = await user_cu_post(owner, f"/list/{list_id}/task", body)
         created.append(task_to_broker(task))
     return {"created": created, "skipped": skipped, "list_id": list_id}
 
@@ -1509,16 +1740,19 @@ async def v2_seed_sample_brokers(user: UserContext = Depends(get_current_user)):
 # =============================================================
 
 @router.get("/analytics/summary")
-async def v2_analytics_summary(user: UserContext = Depends(get_current_user)):
+async def v2_analytics_summary(wc: WorkspaceContext = Depends(get_workspace_context)):
     """Single-call payload for dashboard cards, heatmap, velocity, broker scorecard.
-    Keeps the frontend to one request for the Reports / Analytics view."""
+    Workspace-scoped — uses owner's ClickUp + caller's perms."""
+    if not wc.has("view_analytics") and not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: view_analytics")
+
     import time as _time
     task_to_deal, task_to_broker, _ = _lazy_mappers()
 
-    # Pull deals
-    deals_resp = await v2_list_deals(user)
+    # Pull deals + brokers via workspace-scoped list endpoints
+    deals_resp = await v2_list_deals(wc)
     deals = deals_resp.get("deals", [])
-    brokers_resp = await v2_list_brokers(user)
+    brokers_resp = await v2_list_brokers(wc)
     brokers = brokers_resp.get("brokers", [])
 
     # Pipeline stage counts
@@ -1604,19 +1838,19 @@ async def v2_analytics_summary(user: UserContext = Depends(get_current_user)):
 async def v2_intake_deep_parse(
     files: list[UploadFile] = File(default=[]),
     text: str | None = Form(default=None),
-    user: UserContext = Depends(get_current_user),
+    wc: WorkspaceContext = Depends(get_workspace_context),
 ):
     """Advanced intake parser. Accepts PDF, XLSX, CSV, TXT, EML, DOCX or pasted
-    text. Uses Claude (if user's Anthropic key set) to extract 40+ CRE fields
-    with confidence scores and source attribution. Falls back to heuristic
-    regex extraction when no AI key is configured.
+    text. Uses Claude (if workspace owner's Anthropic key set) to extract 40+
+    CRE fields with confidence scores and source attribution. Falls back to
+    heuristic regex extraction when no AI key is configured.
     """
     import io as _io
     import re as _re
     import json as _json
 
-    cfg = await _fetch_user_cfg(user)
-    anthropic_key = cfg.get("anthropic_api_key")
+    # Use workspace owner's Anthropic key so all members share AI access
+    anthropic_key = wc.owner.config.get("anthropic_api_key")
 
     sources: list[dict] = []
     for uf in files or []:
@@ -1927,16 +2161,19 @@ async def v2_geocode(payload: dict, user: UserContext = Depends(get_current_user
 
 
 @router.get("/analytics/graph")
-async def v2_analytics_graph(user: UserContext = Depends(get_current_user)):
+async def v2_analytics_graph(wc: WorkspaceContext = Depends(get_workspace_context)):
     """Enriched network graph — brokers, deals, markets, asset classes.
-    Edges: broker↔deal, deal↔market, broker↔asset-class, broker↔broker (co-market).
-    Each node carries rich metadata for inspector panel.
+    Workspace-scoped. Edges: broker↔deal, deal↔market, broker↔asset-class,
+    broker↔broker (co-market). Each node carries rich metadata for inspector.
     """
+    if not wc.has("view_analytics") and not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: view_analytics")
+
     import datetime as _dt
     import time as _time
 
-    deals_resp = await v2_list_deals(user)
-    brokers_resp = await v2_list_brokers(user)
+    deals_resp = await v2_list_deals(wc)
+    brokers_resp = await v2_list_brokers(wc)
     deals = deals_resp.get("deals", [])
     brokers = brokers_resp.get("brokers", [])
 
@@ -1944,7 +2181,7 @@ async def v2_analytics_graph(user: UserContext = Depends(get_current_user)):
     tp_counts: dict[tuple, int] = {}
     last_touch_per_broker: dict[str, str] = {}
     try:
-        tp_resp = await v2_query_touchpoints(user=user)
+        tp_resp = await v2_query_touchpoints(wc=wc)
         for tp in tp_resp.get("touchpoints", []):
             did = tp.get("deal_id") or ""
             bid = tp.get("broker_id") or ""
@@ -2146,13 +2383,17 @@ async def v2_analytics_graph(user: UserContext = Depends(get_current_user)):
 
 
 @router.get("/analytics/heatmap-activity")
-async def v2_analytics_heatmap_activity(user: UserContext = Depends(get_current_user)):
-    """Broker × week activity heatmap — touchpoints per broker per ISO week."""
+async def v2_analytics_heatmap_activity(wc: WorkspaceContext = Depends(get_workspace_context)):
+    """Broker × week activity heatmap — touchpoints per broker per ISO week
+    (workspace-scoped)."""
+    if not wc.has("view_analytics") and not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: view_analytics")
+
     import datetime as _dt
 
-    tp_resp = await v2_query_touchpoints(user=user)
+    tp_resp = await v2_query_touchpoints(wc=wc)
     tps = tp_resp.get("touchpoints", [])
-    brokers_resp = await v2_list_brokers(user)
+    brokers_resp = await v2_list_brokers(wc)
     brokers = brokers_resp.get("brokers", [])
     bmap = {b["id"]: b for b in brokers}
 
@@ -2194,16 +2435,19 @@ async def v2_analytics_heatmap_activity(user: UserContext = Depends(get_current_
 
 
 @router.get("/analytics/reports")
-async def v2_analytics_reports(user: UserContext = Depends(get_current_user)):
+async def v2_analytics_reports(wc: WorkspaceContext = Depends(get_workspace_context)):
     """Extended reporting rollup: stage funnel, avg days per stage, broker
-    leaderboard, source attribution, cadence conversion rate.
+    leaderboard, source attribution, cadence conversion rate (workspace-scoped).
     """
+    if not wc.has("view_analytics") and not wc.has("manage_deals"):
+        raise HTTPException(403, "Missing permission: view_analytics")
+
     import time as _time
     import datetime as _dt
 
-    deals_resp = await v2_list_deals(user)
+    deals_resp = await v2_list_deals(wc)
     deals = deals_resp.get("deals", [])
-    brokers_resp = await v2_list_brokers(user)
+    brokers_resp = await v2_list_brokers(wc)
     brokers = brokers_resp.get("brokers", [])
     bmap = {b["id"]: b for b in brokers}
 
@@ -2244,7 +2488,7 @@ async def v2_analytics_reports(user: UserContext = Depends(get_current_user)):
     # Pull touchpoints once for recency + reply-rate calc
     tp_by_broker: dict[str, list] = {}
     try:
-        _tp_all = await v2_query_touchpoints(user=user)
+        _tp_all = await v2_query_touchpoints(wc=wc)
         for _tp in _tp_all.get("touchpoints", []):
             _bid = _tp.get("broker_id")
             if _bid:
