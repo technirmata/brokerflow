@@ -2639,8 +2639,8 @@ DEFAULT_ROLES = [
     },
     {
         "name": "Admin",
-        "is_system": True,
-        "is_default": False,
+        "is_system": False,
+        "is_default": True,
         "permissions": {
             "admin": True,
             "manage_members": True,
@@ -2650,27 +2650,39 @@ DEFAULT_ROLES = [
         },
     },
     {
-        "name": "Member",
-        "is_system": True,
-        "is_default": True,
-        "permissions": {
-            "admin": False,
-            "manage_members": False,
-            "manage_roles": False,
-            "manage_deals": True,
-            "view_analytics": True,
-        },
-    },
-    {
-        "name": "Viewer",
-        "is_system": True,
+        "name": "Role 1",
+        "is_system": False,
         "is_default": False,
         "permissions": {
             "admin": False,
             "manage_members": False,
             "manage_roles": False,
             "manage_deals": False,
-            "view_analytics": True,
+            "view_analytics": False,
+        },
+    },
+    {
+        "name": "Role 2",
+        "is_system": False,
+        "is_default": False,
+        "permissions": {
+            "admin": False,
+            "manage_members": False,
+            "manage_roles": False,
+            "manage_deals": False,
+            "view_analytics": False,
+        },
+    },
+    {
+        "name": "Role 3",
+        "is_system": False,
+        "is_default": False,
+        "permissions": {
+            "admin": False,
+            "manage_members": False,
+            "manage_roles": False,
+            "manage_deals": False,
+            "view_analytics": False,
         },
     },
 ]
@@ -2752,6 +2764,61 @@ async def _ensure_default_roles(team_id: str) -> list[dict]:
 
 # ---------- Team CRUD ----------
 
+
+async def _seed_default_workspace(user: UserContext) -> None:
+    """First-run bootstrap: create default workspace1 + team1 with Admin/Role 1/2/3
+    roles at both levels, and assign the user as Admin. Idempotent — caller must
+    only invoke when the user has no owned workspaces and no memberships.
+    """
+    # 1. Create workspace1 (slug suffixed to avoid UNIQUE collision across users)
+    slug = f"workspace1-{user.user_id[:8]}"
+    ws_rows = await _svc_insert(
+        "teams",
+        {"name": "workspace1", "slug": slug, "owner_id": user.user_id},
+    )
+    ws = ws_rows[0]
+
+    # 2. Seed workspace roles (Owner, Admin, Role 1/2/3) + add user as Owner
+    ws_roles = await _ensure_default_roles(ws["id"])
+    ws_owner = next((r for r in ws_roles if r["name"] == "Owner"), ws_roles[0])
+    await _svc_insert(
+        "team_members",
+        {
+            "team_id": ws["id"],
+            "user_id": user.user_id,
+            "role_id": ws_owner["id"],
+            "added_by": user.user_id,
+        },
+    )
+
+    # 3. Create team1 sub-team inside workspace1
+    st_rows = await _svc_insert(
+        "workspace_teams",
+        {
+            "workspace_id": ws["id"],
+            "name": "team1",
+            "description": "",
+            "created_by": user.user_id,
+        },
+    )
+    st = st_rows[0]
+
+    # 4. Seed sub-team roles (Team Admin, Admin, Role 1/2/3) + add user as Team Admin
+    st_roles = await _ensure_default_subteam_roles(st["id"])
+    st_admin = next(
+        (r for r in st_roles if r["name"] == "Team Admin"), st_roles[0]
+    )
+    await _svc_insert(
+        "workspace_team_members",
+        {
+            "team_id": st["id"],
+            "user_id": user.user_id,
+            "role_id": st_admin["id"],
+            "added_by": user.user_id,
+        },
+    )
+
+
 @router.get("/teams")
 async def v2_teams_list(user: UserContext = Depends(get_current_user)):
     """All teams the user owns or is a member of."""
@@ -2763,6 +2830,22 @@ async def v2_teams_list(user: UserContext = Depends(get_current_user)):
         "team_members",
         {"user_id": f"eq.{user.user_id}", "select": "team_id,role_id,team_roles(name,permissions)"},
     )
+    # First-run bootstrap: if the user has no workspaces at all, seed the
+    # default workspace1 + team1 with Admin/Role 1/2/3 at both levels.
+    if not owned and not memberships:
+        try:
+            await _seed_default_workspace(user)
+            owned = await _svc_select(
+                "teams", {"owner_id": f"eq.{user.user_id}", "select": "*"}
+            )
+            memberships = await _svc_select(
+                "team_members",
+                {"user_id": f"eq.{user.user_id}", "select": "team_id,role_id,team_roles(name,permissions)"},
+            )
+        except Exception as _seed_err:  # noqa: BLE001
+            # Never let seeding failure block the dashboard — user can create
+            # a workspace manually from the UI.
+            print(f"[v2] seed_default_workspace failed for {user.user_id}: {_seed_err}")
     member_team_ids = [m["team_id"] for m in memberships]
     member_teams: list[dict] = []
     if member_team_ids:
@@ -2951,7 +3034,10 @@ async def v2_roles_delete(
     )
     default = next(
         (r for r in all_roles if r.get("is_default") and r["id"] != role_id),
-        next((r for r in all_roles if r["name"] == "Member"), None),
+        next(
+            (r for r in all_roles if r["name"] == "Admin" and r["id"] != role_id),
+            next((r for r in all_roles if r["id"] != role_id), None),
+        ),
     )
     if default:
         await _svc_update(
@@ -3094,9 +3180,13 @@ async def v2_invites_create(
     if not email or "@" not in email:
         raise HTTPException(400, "valid email required")
     if not role_id:
-        # Fall back to Member role.
+        # Fall back to the team's default role (Admin by default).
         roles = await _ensure_default_roles(team_id)
-        default = next((r for r in roles if r["name"] == "Member"), roles[0])
+        default = (
+            next((r for r in roles if r.get("is_default")), None)
+            or next((r for r in roles if r["name"] == "Admin"), None)
+            or roles[0]
+        )
         role_id = default["id"]
     else:
         role_chk = await _svc_select(
@@ -3363,27 +3453,51 @@ DEFAULT_SUBTEAM_ROLES = [
         },
     },
     {
-        "name": "Member",
-        "is_system": True,
+        "name": "Admin",
+        "is_system": False,
         "is_default": True,
         "permissions": {
-            "team_admin": False,
-            "manage_team_members": False,
-            "manage_team_roles": False,
+            "team_admin": True,
+            "manage_team_members": True,
+            "manage_team_roles": True,
             "edit_team_content": True,
             "view_team_content": True,
         },
     },
     {
-        "name": "Viewer",
-        "is_system": True,
+        "name": "Role 1",
+        "is_system": False,
         "is_default": False,
         "permissions": {
             "team_admin": False,
             "manage_team_members": False,
             "manage_team_roles": False,
             "edit_team_content": False,
-            "view_team_content": True,
+            "view_team_content": False,
+        },
+    },
+    {
+        "name": "Role 2",
+        "is_system": False,
+        "is_default": False,
+        "permissions": {
+            "team_admin": False,
+            "manage_team_members": False,
+            "manage_team_roles": False,
+            "edit_team_content": False,
+            "view_team_content": False,
+        },
+    },
+    {
+        "name": "Role 3",
+        "is_system": False,
+        "is_default": False,
+        "permissions": {
+            "team_admin": False,
+            "manage_team_members": False,
+            "manage_team_roles": False,
+            "edit_team_content": False,
+            "view_team_content": False,
         },
     },
 ]
@@ -3740,7 +3854,10 @@ async def v2_subteam_roles_delete(
     )
     default = next(
         (r for r in all_roles if r.get("is_default") and r["id"] != role_id),
-        next((r for r in all_roles if r["name"] == "Member"), None),
+        next(
+            (r for r in all_roles if r["name"] == "Admin" and r["id"] != role_id),
+            next((r for r in all_roles if r["id"] != role_id), None),
+        ),
     )
     if default:
         await _svc_update(
