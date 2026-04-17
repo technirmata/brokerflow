@@ -279,14 +279,32 @@ alter table public.team_roles enable row level security;
 alter table public.team_members enable row level security;
 alter table public.team_invitations enable row level security;
 
+-- Helper (SECURITY DEFINER): is the current auth user a member/owner of workspace?
+-- Avoids RLS recursion when team_members policies need to reference team_members.
+create or replace function public.is_workspace_member(ws uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.team_members tm
+    where tm.team_id = ws and tm.user_id = auth.uid()
+  )
+  or exists (
+    select 1 from public.teams t
+    where t.id = ws and t.owner_id = auth.uid()
+  );
+$$;
+
+grant execute on function public.is_workspace_member(uuid) to authenticated, anon;
+
 create policy "teams: member read"
   on public.teams for select
   using (
     owner_id = auth.uid()
-    or exists (
-      select 1 from public.team_members tm
-      where tm.team_id = teams.id and tm.user_id = auth.uid()
-    )
+    or public.is_workspace_member(id)
   );
 
 create policy "teams: owner insert"
@@ -299,43 +317,20 @@ create policy "teams: owner update"
 
 create policy "team_roles: member read"
   on public.team_roles for select
-  using (
-    exists (
-      select 1 from public.team_members tm
-      where tm.team_id = team_roles.team_id and tm.user_id = auth.uid()
-    )
-    or exists (
-      select 1 from public.teams t
-      where t.id = team_roles.team_id and t.owner_id = auth.uid()
-    )
-  );
+  using (public.is_workspace_member(team_id));
 
 create policy "team_members: same-team read"
   on public.team_members for select
   using (
     user_id = auth.uid()
-    or exists (
-      select 1 from public.team_members tm2
-      where tm2.team_id = team_members.team_id and tm2.user_id = auth.uid()
-    )
-    or exists (
-      select 1 from public.teams t
-      where t.id = team_members.team_id and t.owner_id = auth.uid()
-    )
+    or public.is_workspace_member(team_id)
   );
 
 create policy "team_invitations: addressee read"
   on public.team_invitations for select
   using (
     lower(email) = lower(coalesce((auth.jwt() ->> 'email'), ''))
-    or exists (
-      select 1 from public.team_members tm
-      where tm.team_id = team_invitations.team_id and tm.user_id = auth.uid()
-    )
-    or exists (
-      select 1 from public.teams t
-      where t.id = team_invitations.team_id and t.owner_id = auth.uid()
-    )
+    or public.is_workspace_member(team_id)
   );
 
 drop trigger if exists trg_teams_updated_at on public.teams;
@@ -407,48 +402,35 @@ alter table public.workspace_teams enable row level security;
 alter table public.workspace_team_roles enable row level security;
 alter table public.workspace_team_members enable row level security;
 
+-- Helper: is current user a member of the workspace that owns this sub-team?
+create or replace function public.is_subteam_workspace_member(subteam uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.workspace_teams wt
+    where wt.id = subteam
+      and public.is_workspace_member(wt.workspace_id)
+  );
+$$;
+
+grant execute on function public.is_subteam_workspace_member(uuid) to authenticated, anon;
+
 create policy "workspace_teams: workspace member read"
   on public.workspace_teams for select
-  using (
-    exists (
-      select 1 from public.team_members tm
-      where tm.team_id = workspace_teams.workspace_id and tm.user_id = auth.uid()
-    )
-    or exists (
-      select 1 from public.teams t
-      where t.id = workspace_teams.workspace_id and t.owner_id = auth.uid()
-    )
-  );
+  using (public.is_workspace_member(workspace_id));
 
 create policy "workspace_team_roles: workspace member read"
   on public.workspace_team_roles for select
-  using (
-    exists (
-      select 1 from public.workspace_teams wt
-      join public.team_members tm on tm.team_id = wt.workspace_id
-      where wt.id = workspace_team_roles.team_id and tm.user_id = auth.uid()
-    )
-    or exists (
-      select 1 from public.workspace_teams wt
-      join public.teams t on t.id = wt.workspace_id
-      where wt.id = workspace_team_roles.team_id and t.owner_id = auth.uid()
-    )
-  );
+  using (public.is_subteam_workspace_member(team_id));
 
 create policy "workspace_team_members: workspace member read"
   on public.workspace_team_members for select
-  using (
-    exists (
-      select 1 from public.workspace_teams wt
-      join public.team_members tm on tm.team_id = wt.workspace_id
-      where wt.id = workspace_team_members.team_id and tm.user_id = auth.uid()
-    )
-    or exists (
-      select 1 from public.workspace_teams wt
-      join public.teams t on t.id = wt.workspace_id
-      where wt.id = workspace_team_members.team_id and t.owner_id = auth.uid()
-    )
-  );
+  using (public.is_subteam_workspace_member(team_id));
 
 drop trigger if exists trg_workspace_teams_updated_at on public.workspace_teams;
 create trigger trg_workspace_teams_updated_at
