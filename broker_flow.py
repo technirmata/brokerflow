@@ -519,3 +519,5 @@ if __name__ == "__main__":
         except Exception:
             pass
     uvicorn.run(app, host=host, port=port, log_level="info")
+
+# auto-deploy connectivity test
