@@ -2284,13 +2284,25 @@ function tplPeoplePaneSubteam(active, st, wsp) {
   const canManage = !!(wsAdmin || myPerms.team_admin || myPerms.manage_team_members);
   const canDelete = wsAdmin;
 
-  // pull members & roles for this sub-team (load on demand)
-  const isActiveSub = state.activeSubteamId === st.id;
-  if (!isActiveSub) {
-    state.activeSubteamId = st.id;
-    state.subteamMembers = [];
-    state.subteamRoles = [];
-    loadActiveSubteamData().then(() => { if (state.view === "admin" && state.adminTab === "team") renderActiveView(); });
+  // pull members & roles for this sub-team (load on demand, tracked by _loadedSubteamId)
+  const isLoaded = state._loadedSubteamId === st.id;
+  if (!isLoaded) {
+    // Kick the load only once per st.id — guard with _loadingSubteamId so
+    // repeated re-renders (while the fetch is still in flight) don't fire
+    // duplicate requests or keep resetting the members array.
+    if (state._loadingSubteamId !== st.id) {
+      state._loadingSubteamId = st.id;
+      state.activeSubteamId = st.id;
+      state.subteamMembers = [];
+      state.subteamRoles = [];
+      loadActiveSubteamData()
+        .then(() => { state._loadedSubteamId = st.id; })
+        .catch(() => { /* toast already shown */ })
+        .finally(() => {
+          state._loadingSubteamId = null;
+          if (state.view === "admin" && state.adminTab === "team") renderActiveView();
+        });
+    }
     return `
       <div class="bf-pane-header">
         <div><div class="bf-pane-title">#${esc(st.name)}</div><div class="bf-pane-sub">Loading team…</div></div>
@@ -2409,8 +2421,13 @@ function bindTeamTabDiscord() {
     el.onclick = () => {
       const key = el.dataset.rail;
       state.teamPaneSel = key;
-      // Sub-team selected → invalidate its cached list so pane re-fetches
-      if (key !== "all") state.activeSubteamId = null;
+      if (key !== "all" && state.activeSubteamId !== key) {
+        // Switching to a different sub-team — invalidate cached members
+        // via the load-tracking flag (NOT activeSubteamId, which stays in
+        // sync for the sidebar selector).
+        state.activeSubteamId = key;
+        state._loadedSubteamId = null;
+      }
       renderActiveView();
     };
   });
@@ -2572,7 +2589,7 @@ function bindTeamTabDiscord() {
         toast(isSelf ? "Left team" : "Removed");
         state.wsPeople = null;
         await Promise.all([loadActiveSubteamData(), loadWorkspacePeople()]);
-        if (isSelf) { state.teamPaneSel = "all"; state.activeSubteamId = null; }
+        if (isSelf) { state.teamPaneSel = "all"; state.activeSubteamId = null; state._loadedSubteamId = null; }
         renderActiveView();
       } catch (err) { toast("Failed: " + err.message, "err"); }
     };
@@ -2727,6 +2744,8 @@ function renderWorkspaceContext() {
     state.subteamRoles = [];
     state.wsPeople = null;
     state.teamPaneSel = "all";
+    state._loadedSubteamId = null;
+    state._loadingSubteamId = null;
     // Workspace switch — everything else (deals/brokers/touchpoints) is
     // workspace-scoped on the backend, so drop the in-memory + persisted
     // entity cache and force a fresh load against the new workspace.
@@ -2857,6 +2876,7 @@ function openSubteamCreate() {
       state.wsPeople = null;
       state.activeSubteamId = r.team.id;
       state.teamPaneSel = r.team.id;
+      state._loadedSubteamId = null;
       await Promise.all([loadActiveTeamData(), loadWorkspacePeople()]);
       renderActiveView();
     } catch (e) { toast("Create failed: " + e.message, "err"); }
@@ -2993,6 +3013,7 @@ function renderSubteamManagerModal() {
     hide("compose-modal");
     state.activeSubteamId = null;
     state.subteamMembers = []; state.subteamRoles = [];
+    state._loadedSubteamId = null;
     renderActiveView();
   };
   const btnRename = document.querySelector("[data-st-rename]");
@@ -3064,6 +3085,8 @@ async function deleteActiveSubteam() {
     hide("compose-modal");
     state.activeSubteamId = null;
     state.subteamMembers = []; state.subteamRoles = [];
+    state._loadedSubteamId = null;
+    state.teamPaneSel = "all";
     await loadActiveTeamData();
     renderActiveView();
   } catch (e) { toast("Delete failed: " + e.message, "err"); }
