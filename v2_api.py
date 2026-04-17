@@ -2866,6 +2866,83 @@ async def _svc_delete(path: str, params: dict[str, str]) -> None:
     await _svc_request("DELETE", path, params=params, prefer="return=minimal")
 
 
+# ---------- Supabase auth admin helpers (identity enrichment) ----------
+
+async def _svc_auth_admin_get_user(user_id: str) -> dict | None:
+    """Fetch a single auth.users row via the Supabase admin API.
+    Needs service-role key. Returns None on 404.
+    """
+    _require_service_role()
+    url = f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}"
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Accept": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url, headers=headers)
+            if r.status_code == 404:
+                return None
+            if r.status_code != 200:
+                return None
+            return r.json()
+    except Exception:
+        return None
+
+
+def _identity_from_auth_user(u: dict | None) -> dict:
+    if not u:
+        return {"email": None, "display_name": None, "avatar_url": None}
+    meta = u.get("user_metadata") or {}
+    email = u.get("email")
+    display = (
+        meta.get("display_name")
+        or meta.get("full_name")
+        or meta.get("name")
+        or (email.split("@")[0] if email else None)
+    )
+    return {
+        "email": email,
+        "display_name": display,
+        "avatar_url": meta.get("avatar_url"),
+    }
+
+
+async def _identity_map(user_ids: list[str]) -> dict[str, dict]:
+    """Return {user_id: {email, display_name, avatar_url}} for the given ids.
+    Deduplicates, runs admin lookups in parallel, swallows failures per user.
+    """
+    import asyncio
+
+    uniq = [u for u in dict.fromkeys(user_ids) if u]
+    if not uniq or not SUPABASE_SERVICE_ROLE_KEY:
+        return {u: _identity_from_auth_user(None) for u in uniq}
+    results = await asyncio.gather(
+        *[_svc_auth_admin_get_user(u) for u in uniq], return_exceptions=True
+    )
+    out: dict[str, dict] = {}
+    for uid, res in zip(uniq, results):
+        if isinstance(res, Exception):
+            out[uid] = _identity_from_auth_user(None)
+        else:
+            out[uid] = _identity_from_auth_user(res)
+    return out
+
+
+async def _enrich_members_with_identity(rows: list[dict]) -> list[dict]:
+    if not rows:
+        return rows
+    ids = [r.get("user_id") for r in rows if r.get("user_id")]
+    idmap = await _identity_map(ids)
+    for r in rows:
+        ident = idmap.get(r.get("user_id")) or _identity_from_auth_user(None)
+        r["email"] = ident["email"]
+        r["display_name"] = ident["display_name"]
+        r["avatar_url"] = ident["avatar_url"]
+    return rows
+
+
 # ---------- Permission helpers ----------
 
 DEFAULT_ROLES = [
@@ -3310,11 +3387,10 @@ async def v2_members_list(
             "order": "added_at.asc",
         },
     )
-    # Look up emails/display names from auth.users — not accessible via REST,
-    # so we keep the user_id and let the frontend show it; team owner is tagged.
     team = await _get_team_or_404(team_id)
     for r in rows:
         r["is_owner"] = r["user_id"] == team["owner_id"]
+    await _enrich_members_with_identity(rows)
     return {"members": rows, "owner_id": team["owner_id"]}
 
 
@@ -3673,6 +3749,118 @@ async def v2_workspace_invites_revoke(
     user: UserContext = Depends(get_current_user),
 ):
     return await v2_invites_revoke(team_id=workspace_id, invite_id=invite_id, user=user)
+
+
+@router.get("/workspaces/{workspace_id}/people")
+async def v2_workspace_people(
+    workspace_id: str, user: UserContext = Depends(get_current_user)
+):
+    """Flat "All people" view: one row per workspace member with their
+    workspace role + every sub-team they belong to. Used by the Discord-style
+    Settings → Team tab's default pane.
+    """
+    await _require_member(workspace_id, user)
+    workspace = await _get_team_or_404(workspace_id)
+
+    ws_members = await _svc_select(
+        "team_members",
+        {
+            "team_id": f"eq.{workspace_id}",
+            "select": "id,user_id,role_id,added_at,team_roles(id,name,permissions,is_system)",
+            "order": "added_at.asc",
+        },
+    )
+    subteams = await _svc_select(
+        "workspace_teams",
+        {
+            "workspace_id": f"eq.{workspace_id}",
+            "select": "id,name",
+            "order": "created_at.asc",
+        },
+    )
+    st_ids = [s["id"] for s in subteams]
+    st_by_id = {s["id"]: s for s in subteams}
+    subteam_memberships: list[dict] = []
+    if st_ids:
+        subteam_memberships = await _svc_select(
+            "workspace_team_members",
+            {
+                "team_id": f"in.({','.join(st_ids)})",
+                "select": "id,team_id,user_id,role_id,workspace_team_roles(id,name,is_system)",
+            },
+        )
+
+    # Pending invites — show as "invited" rows so admins can resend/revoke
+    invites = await _svc_select(
+        "team_invitations",
+        {
+            "team_id": f"eq.{workspace_id}",
+            "select": "id,email,role_id,token,expires_at,accepted_at,revoked_at,team_roles(name)",
+            "order": "created_at.desc",
+        },
+    )
+
+    # identity map: every workspace user_id
+    ids = [m["user_id"] for m in ws_members]
+    idmap = await _identity_map(ids)
+
+    # group sub-team memberships by user_id
+    by_user: dict[str, list[dict]] = {}
+    for sm in subteam_memberships:
+        uid = sm.get("user_id")
+        if not uid:
+            continue
+        st = st_by_id.get(sm["team_id"]) or {}
+        role = sm.get("workspace_team_roles") or {}
+        by_user.setdefault(uid, []).append({
+            "membership_id": sm["id"],
+            "team_id": sm["team_id"],
+            "team_name": st.get("name"),
+            "role_id": sm.get("role_id"),
+            "role_name": role.get("name"),
+        })
+
+    people = []
+    for m in ws_members:
+        uid = m["user_id"]
+        ident = idmap.get(uid) or _identity_from_auth_user(None)
+        role = m.get("team_roles") or {}
+        people.append({
+            "membership_id": m["id"],
+            "user_id": uid,
+            "email": ident["email"],
+            "display_name": ident["display_name"],
+            "avatar_url": ident["avatar_url"],
+            "is_owner": uid == workspace["owner_id"],
+            "ws_role_id": m.get("role_id"),
+            "ws_role_name": role.get("name"),
+            "ws_role_permissions": role.get("permissions") or {},
+            "teams": by_user.get(uid, []),
+        })
+
+    pending = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for inv in invites:
+        if inv.get("accepted_at") or inv.get("revoked_at"):
+            continue
+        status = "expired" if inv.get("expires_at") and inv["expires_at"] < now_iso else "pending"
+        role = inv.get("team_roles") or {}
+        pending.append({
+            "invitation_id": inv["id"],
+            "email": inv["email"],
+            "role_id": inv.get("role_id"),
+            "role_name": role.get("name"),
+            "status": status,
+            "expires_at": inv.get("expires_at"),
+            "token": inv["token"],
+        })
+
+    return {
+        "workspace": {"id": workspace["id"], "name": workspace.get("name"), "owner_id": workspace["owner_id"]},
+        "subteams": subteams,
+        "people": people,
+        "pending_invitations": pending,
+    }
 
 
 # =================================================================
@@ -4133,6 +4321,7 @@ async def v2_subteam_members_list(
             "order": "added_at.asc",
         },
     )
+    await _enrich_members_with_identity(rows)
     return {"members": rows}
 
 
