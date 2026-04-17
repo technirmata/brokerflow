@@ -1,5 +1,5 @@
 """
-BrokerFlow v2 API — multi-tenant endpoints.
+JP BrokerFlow v2 API — multi-tenant endpoints.
 
 Every endpoint requires a Supabase JWT and uses the user's stored
 ClickUp token + other API keys from user_configs.
@@ -161,7 +161,7 @@ async def wizard_clickup_spaces(
     payload: dict,
     user: UserContext = Depends(get_current_user),
 ):
-    """List spaces in a workspace so user can pick where to put BrokerFlow lists."""
+    """List spaces in a workspace so user can pick where to put JP BrokerFlow lists."""
     token = (payload.get("token") or user.clickup_token or "").strip()
     workspace_id = payload.get("workspace_id", "").strip()
     if not token or not workspace_id:
@@ -183,8 +183,8 @@ async def wizard_clickup_setup(
     payload: dict,
     user: UserContext = Depends(get_current_user),
 ):
-    """Create the BrokerFlow folder + 5 lists in the chosen space.
-    Idempotent-ish: skips if folder named 'BrokerFlow' already exists.
+    """Create the JP BrokerFlow folder + 5 lists in the chosen space.
+    Idempotent-ish: skips if folder named 'JP BrokerFlow' already exists.
     """
     token = (payload.get("token") or user.clickup_token or "").strip()
     workspace_id = payload.get("workspace_id", "").strip()
@@ -193,7 +193,7 @@ async def wizard_clickup_setup(
         raise HTTPException(400, "token, workspace_id, space_id required")
 
     headers = {"Authorization": token, "Content-Type": "application/json"}
-    folder_name = "BrokerFlow"
+    folder_name = "JP BrokerFlow"
     list_specs = [
         ("clickup_list_active_deals", "Active Deals"),
         ("clickup_list_brokers", "Broker Directory"),
@@ -1905,7 +1905,7 @@ async def v2_geocode(payload: dict, user: UserContext = Depends(get_current_user
             r = await client.get(
                 "https://nominatim.openstreetmap.org/search",
                 params={"q": q, "format": "json", "limit": 1, "addressdetails": 1},
-                headers={"User-Agent": "BrokerFlow/2.0 (acquisitions tool)"},
+                headers={"User-Agent": "JP-BrokerFlow/2.0 (acquisitions tool)"},
             )
             if r.status_code != 200:
                 return {"error": f"Nominatim {r.status_code}", "q": q}
