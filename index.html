@@ -410,6 +410,28 @@ const state = {
   subteamRoles: [],
 };
 
+/* ---------- Workspace-context persistence (survives reload) ---------- */
+const WS_CONTEXT_KEY = "brokerflow.wsContext.v1";
+function saveWsContext() {
+  try {
+    localStorage.setItem(WS_CONTEXT_KEY, JSON.stringify({
+      activeTeamId: state.activeTeamId || null,
+      activeSubteamId: state.activeSubteamId || null,
+    }));
+  } catch (_) { /* storage full / disabled — silent */ }
+}
+function loadWsContext() {
+  try {
+    const raw = localStorage.getItem(WS_CONTEXT_KEY);
+    if (!raw) return { activeTeamId: null, activeSubteamId: null };
+    const p = JSON.parse(raw);
+    return {
+      activeTeamId: p && typeof p.activeTeamId === "string" ? p.activeTeamId : null,
+      activeSubteamId: p && typeof p.activeSubteamId === "string" ? p.activeSubteamId : null,
+    };
+  } catch (_) { return { activeTeamId: null, activeSubteamId: null }; }
+}
+
 /* ---------- API wrappers ---------- */
 async function apiGet(path) {
   const res = await fetch(path, {
@@ -476,6 +498,9 @@ async function routeAfterLogin() {
     renderWizardStep(state.meta.wizard_step || 1);
   } else {
     show("view-dashboard");
+    // Load workspace/sub-team context FIRST so the sidebar populates + the
+    // backend auto-seeds workspace1 + team1 for brand-new users.
+    await loadTeams();
     await refreshDashboard();
   }
   // After any post-login routing finishes, surface pending invite (if any).
@@ -2012,12 +2037,35 @@ async function loadTeams() {
   try {
     const r = await apiGet("/api/v2/teams");
     state.teams = r.teams || [];
-    if (!state.activeTeamId && state.teams.length) {
-      state.activeTeamId = state.teams[0].id;
-    }
-    if (state.activeTeamId) {
+    // Restore last-active workspace from localStorage; fall back to the
+    // default "workspace1" by name; final fallback is first in list.
+    const saved = loadWsContext();
+    const byId = (id) => state.teams.find(t => t.id === id);
+    const byName = (n) => state.teams.find(t => (t.name || "").toLowerCase() === n);
+    let chosen = null;
+    if (state.activeTeamId && byId(state.activeTeamId)) chosen = byId(state.activeTeamId);
+    else if (saved.activeTeamId && byId(saved.activeTeamId)) chosen = byId(saved.activeTeamId);
+    else chosen = byName("workspace1") || state.teams[0] || null;
+    if (chosen) {
+      const firstSelect = state.activeTeamId !== chosen.id;
+      state.activeTeamId = chosen.id;
+      // If we switched workspaces (not same as saved), clear the sub-team so
+      // loadActiveTeamData can pick the default sub-team for this workspace.
+      if (firstSelect && saved.activeTeamId && saved.activeTeamId !== chosen.id) {
+        state.activeSubteamId = null;
+      } else if (saved.activeTeamId === chosen.id) {
+        // Same workspace as last session — restore saved sub-team (verified below)
+        state.activeSubteamId = saved.activeSubteamId || null;
+      }
       await loadActiveTeamData();
+      // After subteams are loaded, pick the best sub-team default.
+      pickDefaultSubteam();
+      if (state.activeSubteamId) await loadActiveSubteamData();
+    } else {
+      state.activeTeamId = null;
+      state.activeSubteamId = null;
     }
+    saveWsContext();
   } catch (e) {
     state.teams = [];
     if ((e.message || "").includes("503")) {
@@ -2026,6 +2074,20 @@ async function loadTeams() {
     }
   }
   renderWorkspaceContext();
+}
+
+/* Pick a sane sub-team default inside the active workspace:
+   1. Keep saved one if it still exists in this workspace
+   2. Else pick the sub-team named "team1" if present
+   3. Else leave null (shows "All teams in workspace") */
+function pickDefaultSubteam() {
+  const subteams = state.subteams || [];
+  if (!subteams.length) { state.activeSubteamId = null; return; }
+  const byId = (id) => subteams.find(s => s.id === id);
+  const byName = (n) => subteams.find(s => (s.name || "").toLowerCase() === n);
+  if (state.activeSubteamId && byId(state.activeSubteamId)) return;
+  const t1 = byName("team1");
+  state.activeSubteamId = t1 ? t1.id : null;
 }
 
 /* ---------- Sidebar workspace/team heading+subheading switcher ---------- */
@@ -2076,6 +2138,10 @@ function renderWorkspaceContext() {
     state.subteamMembers = [];
     state.subteamRoles = [];
     await loadActiveTeamData();
+    // Auto-pick "team1" (or keep null) for the newly-selected workspace.
+    pickDefaultSubteam();
+    if (state.activeSubteamId) await loadActiveSubteamData();
+    saveWsContext();
     renderWorkspaceContext();
     renderActiveView();
   };
@@ -2085,6 +2151,7 @@ function renderWorkspaceContext() {
     if (v === "__new__") { renderWorkspaceContext(); openSubteamCreate(); return; }
     state.activeSubteamId = v || null;
     if (v) await loadActiveSubteamData();
+    saveWsContext();
     renderWorkspaceContext();
     renderActiveView();
   };
