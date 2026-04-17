@@ -1178,3 +1178,416 @@ async def v2_public_meta():
         "supabase_url": SUPABASE_URL if supabase_configured() else None,
         "supabase_anon_key": SUPABASE_ANON_KEY if supabase_configured() else None,
     }
+
+
+# =============================================================
+# Helpers for write endpoints
+# =============================================================
+
+def _pack_helpers():
+    """Lazy import pack/strip/extract so we don't bloat module load."""
+    from broker_flow import pack_data, strip_data, extract_data
+    return pack_data, strip_data, extract_data
+
+
+async def _resolve_deals_list_id(user: UserContext) -> str:
+    """Return the ClickUp list id to write new deals into.
+    Priority: configured list, then first space list classified as 'deals'.
+    """
+    if user.list_deals:
+        return user.list_deals
+    lists = await _fetch_space_lists(user)
+    for l in lists:
+        if _classify_list(l.get("name", "")) == "deals":
+            return l["id"]
+    raise HTTPException(400, "No deals list found. Run the setup wizard or configure a list.")
+
+
+async def _resolve_brokers_list_id(user: UserContext) -> str:
+    if user.list_brokers:
+        return user.list_brokers
+    lists = await _fetch_space_lists(user)
+    for l in lists:
+        if _classify_list(l.get("name", "")) == "brokers":
+            return l["id"]
+    raise HTTPException(400, "No brokers list found. Run the setup wizard or configure a list.")
+
+
+PRIORITY_MAP = {"urgent": 1, "high": 2, "normal": 3, "low": 4}
+
+
+# =============================================================
+# Deals — CRUD
+# =============================================================
+
+@router.post("/deals")
+async def v2_create_deal(
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    """Create a deal as a ClickUp task. Packs structured fields into description JSON block.
+    payload: any of {name, status, priority, tags, deal_id, asset_class, city, state,
+                     units, ask_price, noi, cap_rate, broker_id, doc_status,
+                     docs_received, docs_outstanding, next_action, next_action_date,
+                     source, stage_entered, description_prose, list_id?}
+    """
+    pack_data, _, _ = _pack_helpers()
+    task_to_deal, _, _ = _lazy_mappers()
+
+    list_id = payload.get("list_id") or await _resolve_deals_list_id(user)
+    name = (
+        payload.get("name")
+        or f"{payload.get('deal_id','JPIG-???')} · {payload.get('city','')}, {payload.get('state','')}"
+    ).strip(" ·,")
+    reserved = {"name", "status", "priority", "tags", "description_prose", "list_id"}
+    data = {k: v for k, v in payload.items() if k not in reserved}
+    prose = payload.get("description_prose", "")
+    body: dict[str, Any] = {
+        "name": name,
+        "description": pack_data(prose, data),
+    }
+    if "status" in payload:
+        body["status"] = payload["status"]
+    if "priority" in payload:
+        body["priority"] = PRIORITY_MAP.get(payload["priority"], 3)
+    if "tags" in payload:
+        body["tags"] = payload["tags"]
+
+    task = await user_cu_post(user, f"/list/{list_id}/task", body)
+    deal = task_to_deal(task)
+    deal["source_list_id"] = list_id
+    return deal
+
+
+@router.put("/deals/{task_id}")
+async def v2_update_deal(
+    task_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    """Patch a deal. Merges structured fields; preserves prose unless overridden."""
+    pack_data, strip_data, extract_data = _pack_helpers()
+    task_to_deal, _, _ = _lazy_mappers()
+
+    existing = await user_cu_get(user, f"/task/{task_id}")
+    existing_desc = existing.get("description", "") or ""
+    current_data = extract_data(existing_desc)
+
+    reserved = {"name", "status", "priority", "tags", "description_prose"}
+    merged = {**current_data, **{k: v for k, v in payload.items() if k not in reserved}}
+    prose = payload.get("description_prose", strip_data(existing_desc))
+
+    body: dict[str, Any] = {"description": pack_data(prose, merged)}
+    if "name" in payload:
+        body["name"] = payload["name"]
+    if "status" in payload:
+        body["status"] = payload["status"]
+    if "priority" in payload:
+        body["priority"] = PRIORITY_MAP.get(payload["priority"], 3)
+
+    task = await user_cu_put(user, f"/task/{task_id}", body)
+    return task_to_deal(task)
+
+
+@router.delete("/deals/{task_id}")
+async def v2_delete_deal(
+    task_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    await user_cu_delete(user, f"/task/{task_id}")
+    return {"ok": True}
+
+
+# =============================================================
+# Brokers — CRUD
+# =============================================================
+
+@router.post("/brokers")
+async def v2_create_broker(
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    """Create a broker record in ClickUp. Structured fields go in JSON block.
+    payload: {name, firm?, region?, email?, phone?, relationship_strength?,
+              preferred_assets?, notes?, list_id?}
+    """
+    pack_data, _, _ = _pack_helpers()
+    _, task_to_broker, _ = _lazy_mappers()
+
+    list_id = payload.get("list_id") or await _resolve_brokers_list_id(user)
+    name = (payload.get("name") or payload.get("firm") or "Unnamed broker").strip()
+    reserved = {"name", "notes", "list_id"}
+    data = {k: v for k, v in payload.items() if k not in reserved}
+    prose = payload.get("notes", "")
+    body = {"name": name, "description": pack_data(prose, data)}
+
+    task = await user_cu_post(user, f"/list/{list_id}/task", body)
+    broker = task_to_broker(task)
+    broker["source_list_id"] = list_id
+    return broker
+
+
+@router.put("/brokers/{task_id}")
+async def v2_update_broker(
+    task_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    pack_data, strip_data, extract_data = _pack_helpers()
+    _, task_to_broker, _ = _lazy_mappers()
+
+    existing = await user_cu_get(user, f"/task/{task_id}")
+    existing_desc = existing.get("description", "") or ""
+    current_data = extract_data(existing_desc)
+
+    reserved = {"name", "notes"}
+    merged = {**current_data, **{k: v for k, v in payload.items() if k not in reserved}}
+    prose = payload.get("notes", strip_data(existing_desc))
+
+    body: dict[str, Any] = {"description": pack_data(prose, merged)}
+    if "name" in payload:
+        body["name"] = payload["name"]
+
+    task = await user_cu_put(user, f"/task/{task_id}", body)
+    return task_to_broker(task)
+
+
+@router.delete("/brokers/{task_id}")
+async def v2_delete_broker(
+    task_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    await user_cu_delete(user, f"/task/{task_id}")
+    return {"ok": True}
+
+
+# =============================================================
+# Outreach compose URLs (Gmail / Outlook / mailto)
+# =============================================================
+
+@router.post("/outreach/draft")
+async def v2_outreach_draft(
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    """Build compose-deeplink URLs for Gmail, Outlook, and mailto.
+    payload: {to, subject, body, cc?, bcc?}
+    """
+    from urllib.parse import quote
+    to = (payload.get("to") or "").strip()
+    subject = payload.get("subject", "")
+    body = payload.get("body", "")
+    cc = payload.get("cc", "")
+    bcc = payload.get("bcc", "")
+
+    q = lambda s: quote(s or "", safe="")
+    mailto = f"mailto:{to}?subject={q(subject)}&body={q(body)}"
+    if cc:
+        mailto += f"&cc={q(cc)}"
+    if bcc:
+        mailto += f"&bcc={q(bcc)}"
+
+    gmail = (
+        f"https://mail.google.com/mail/?view=cm&fs=1"
+        f"&to={q(to)}&su={q(subject)}&body={q(body)}"
+    )
+    if cc:
+        gmail += f"&cc={q(cc)}"
+    if bcc:
+        gmail += f"&bcc={q(bcc)}"
+
+    outlook = (
+        f"https://outlook.office.com/mail/deeplink/compose"
+        f"?to={q(to)}&subject={q(subject)}&body={q(body)}"
+    )
+    if cc:
+        outlook += f"&cc={q(cc)}"
+
+    return {"mailto": mailto, "gmail": gmail, "outlook": outlook}
+
+
+# =============================================================
+# Document intake — PDF parse (T-12, P&L, OM)
+# =============================================================
+
+from fastapi import File, UploadFile, Form
+
+
+@router.post("/docs/parse")
+async def v2_docs_parse(
+    file: UploadFile = File(...),
+    user: UserContext = Depends(get_current_user),
+):
+    """Upload a T-12 / P&L / OM PDF. Extracts text and runs heuristic regex
+    to pull NOI, gross income, expenses, units, ask price, cap rate.
+    Returns {filename, char_count, extracted, raw_text_preview}.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        raise HTTPException(500, "pdfplumber not installed")
+
+    from broker_flow import heuristic_extract
+    import tempfile, os as _os
+
+    raw = await file.read()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tf:
+        tf.write(raw)
+        tmp_path = tf.name
+
+    text = ""
+    try:
+        with pdfplumber.open(tmp_path) as pdf:
+            for page in pdf.pages:
+                text += (page.extract_text() or "") + "\n"
+    finally:
+        try:
+            _os.unlink(tmp_path)
+        except Exception:
+            pass
+
+    return {
+        "filename": file.filename,
+        "char_count": len(text),
+        "extracted": heuristic_extract(text),
+        "raw_text_preview": text[:3000],
+    }
+
+
+# =============================================================
+# Seed sample brokers (one-tap onboarding helper)
+# =============================================================
+
+@router.post("/seed/sample-brokers")
+async def v2_seed_sample_brokers(user: UserContext = Depends(get_current_user)):
+    """Create 5 sample brokers in the user's broker list. Idempotent by name."""
+    pack_data, _, _ = _pack_helpers()
+    _, task_to_broker, _ = _lazy_mappers()
+
+    list_id = await _resolve_brokers_list_id(user)
+
+    # Check existing names to avoid dupes
+    existing = await user_cu_get(
+        user, f"/list/{list_id}/task", params={"include_closed": "true"}
+    )
+    existing_names = {t.get("name", "").lower() for t in existing.get("tasks", []) or []}
+
+    samples = [
+        {"name": "Mark Reynolds", "firm": "Marcus & Millichap", "region": "Southwest",
+         "email": "mreynolds@mmreis.com", "phone": "+1-214-555-0101",
+         "relationship_strength": "Warm", "preferred_assets": ["MF", "Hotel"]},
+        {"name": "Jennifer Tran", "firm": "CBRE", "region": "Southeast",
+         "email": "jen.tran@cbre.com", "phone": "+1-407-555-0155",
+         "relationship_strength": "Hot", "preferred_assets": ["RV", "MHP"]},
+        {"name": "David Park", "firm": "JLL", "region": "Southwest",
+         "email": "dpark@jll.com", "phone": "+1-915-555-0199",
+         "relationship_strength": "Cold", "preferred_assets": ["Hotel", "Industrial"]},
+        {"name": "Sarah Nguyen", "firm": "Newmark", "region": "Southeast",
+         "email": "snguyen@newmark.com", "phone": "+1-305-555-0177",
+         "relationship_strength": "Trusted", "preferred_assets": ["Self-Storage", "MF"]},
+        {"name": "Tom O'Brien", "firm": "Colliers", "region": "Midwest",
+         "email": "tobrien@colliers.com", "phone": "+1-312-555-0122",
+         "relationship_strength": "Warm", "preferred_assets": ["Industrial", "MF"]},
+    ]
+    created, skipped = [], []
+    for s in samples:
+        if s["name"].lower() in existing_names:
+            skipped.append(s["name"])
+            continue
+        data = {k: v for k, v in s.items() if k != "name"}
+        body = {"name": s["name"], "description": pack_data("", data)}
+        task = await user_cu_post(user, f"/list/{list_id}/task", body)
+        created.append(task_to_broker(task))
+    return {"created": created, "skipped": skipped, "list_id": list_id}
+
+
+# =============================================================
+# Dashboard analytics — rollups for Reports / Heatmap / Scorecard
+# =============================================================
+
+@router.get("/analytics/summary")
+async def v2_analytics_summary(user: UserContext = Depends(get_current_user)):
+    """Single-call payload for dashboard cards, heatmap, velocity, broker scorecard.
+    Keeps the frontend to one request for the Reports / Analytics view."""
+    import time as _time
+    task_to_deal, task_to_broker, _ = _lazy_mappers()
+
+    # Pull deals
+    deals_resp = await v2_list_deals(user)
+    deals = deals_resp.get("deals", [])
+    brokers_resp = await v2_list_brokers(user)
+    brokers = brokers_resp.get("brokers", [])
+
+    # Pipeline stage counts
+    stage_counts: dict[str, int] = {}
+    for d in deals:
+        s = (d.get("status") or "unknown").lower()
+        stage_counts[s] = stage_counts.get(s, 0) + 1
+
+    # Asset-class × stage heatmap
+    heatmap: dict[str, dict[str, int]] = {}
+    for d in deals:
+        ac = d.get("asset_class") or "Other"
+        st = (d.get("status") or "unknown").lower()
+        heatmap.setdefault(ac, {})
+        heatmap[ac][st] = heatmap[ac].get(st, 0) + 1
+
+    # State-based map tally
+    by_state: dict[str, int] = {}
+    for d in deals:
+        st = (d.get("state") or "").upper()
+        if st:
+            by_state[st] = by_state.get(st, 0) + 1
+
+    # Broker scorecard: deals + complete deals + conversion
+    broker_deal_count: dict[str, int] = {}
+    broker_complete: dict[str, int] = {}
+    for d in deals:
+        bid = d.get("broker_id") or ""
+        if not bid:
+            continue
+        broker_deal_count[bid] = broker_deal_count.get(bid, 0) + 1
+        if (d.get("status") or "").lower() in ("docs complete", "underwriting", "loi", "under contract", "closed"):
+            broker_complete[bid] = broker_complete.get(bid, 0) + 1
+
+    scorecard = []
+    for b in brokers:
+        bid = b.get("id")
+        dc = broker_deal_count.get(bid, 0)
+        cc = broker_complete.get(bid, 0)
+        conv = round((cc / dc) * 100, 1) if dc else 0.0
+        scorecard.append({
+            "broker_id": bid,
+            "name": b.get("name"),
+            "firm": b.get("firm"),
+            "deal_count": dc,
+            "complete_count": cc,
+            "conversion_pct": conv,
+            "score": dc * cc,
+        })
+    scorecard.sort(key=lambda x: x["score"], reverse=True)
+
+    # Velocity — deals by month (date_created ms)
+    velocity: dict[str, int] = {}
+    for d in deals:
+        dc = d.get("date_created")
+        if not dc:
+            continue
+        try:
+            ts = int(dc) / 1000
+            mo = _time.strftime("%Y-%m", _time.gmtime(ts))
+            velocity[mo] = velocity.get(mo, 0) + 1
+        except Exception:
+            pass
+
+    return {
+        "totals": {
+            "deals": len(deals),
+            "brokers": len(brokers),
+        },
+        "stage_counts": stage_counts,
+        "heatmap": heatmap,
+        "by_state": by_state,
+        "broker_scorecard": scorecard,
+        "velocity": velocity,
+    }
