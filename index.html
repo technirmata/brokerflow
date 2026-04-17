@@ -432,6 +432,30 @@ function loadWsContext() {
   } catch (_) { return { activeTeamId: null, activeSubteamId: null }; }
 }
 
+/* ---------- Entity cache (instant paint on return) ----------
+   Deals / brokers / teams survive reload so the user sees their last-known
+   pipeline in <50ms instead of staring at a spinner for the ClickUp
+   roundtrip. Fresh data arrives in background and replaces cache. */
+const ENTITY_CACHE_KEY = "brokerflow.entityCache.v1";
+const ENTITY_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h — stale data fine, we always re-fetch
+function saveEntityCache(patch) {
+  try {
+    const existing = loadEntityCache() || {};
+    const next = { ...existing, ...patch, ts: Date.now() };
+    localStorage.setItem(ENTITY_CACHE_KEY, JSON.stringify(next));
+  } catch (_) {}
+}
+function loadEntityCache() {
+  try {
+    const raw = localStorage.getItem(ENTITY_CACHE_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw);
+    if (!p || typeof p !== "object") return null;
+    if (typeof p.ts === "number" && (Date.now() - p.ts) > ENTITY_CACHE_TTL_MS) return null;
+    return p;
+  } catch (_) { return null; }
+}
+
 /* ---------- API wrappers ---------- */
 async function apiGet(path) {
   const res = await fetch(path, {
@@ -498,10 +522,21 @@ async function routeAfterLogin() {
     renderWizardStep(state.meta.wizard_step || 1);
   } else {
     show("view-dashboard");
-    // Load workspace/sub-team context FIRST so the sidebar populates + the
-    // backend auto-seeds workspace1 + team1 for brand-new users.
-    await loadTeams();
-    await refreshDashboard();
+    // Paint cached deals/brokers/teams INSTANTLY from localStorage so the
+    // user sees their pipeline in <50ms. Fresh network fetches run in
+    // parallel underneath and replace cached state when they land.
+    const cache = loadEntityCache();
+    if (cache) {
+      if (Array.isArray(cache.deals))   state.deals   = cache.deals;
+      if (Array.isArray(cache.brokers)) state.brokers = cache.brokers;
+      if (Array.isArray(cache.teams))   state.teams   = cache.teams;
+      renderNav();
+      renderWorkspaceContext();
+      renderActiveView();
+    }
+    // Fire both roundtrips in parallel — workspace context + pipeline are
+    // independent, so awaiting sequentially doubled perceived load time.
+    await Promise.all([ loadTeams(), refreshDashboard() ]);
   }
   // After any post-login routing finishes, surface pending invite (if any).
   if (state.pendingInviteToken) {
@@ -807,7 +842,13 @@ function loadAnalytics() {
 }
 
 async function refreshDashboard() {
-  $("view-main").innerHTML = `<div class="card p-6 text-sm text-gray-500"><span class="spin"></span> Loading your pipeline…</div>`;
+  // Only show the big spinner if we have NO data to paint — otherwise keep
+  // the cached pipeline visible and refresh silently underneath. Eliminates
+  // the "flash of empty state" on every reload.
+  const hasData = (state.deals && state.deals.length) || (state.brokers && state.brokers.length);
+  if (!hasData) {
+    $("view-main").innerHTML = `<div class="card p-6 text-sm text-gray-500"><span class="spin"></span> Loading your pipeline…</div>`;
+  }
   renderNav();
   // Reset stale analytics flags so a fresh fetch is attempted
   state.analyticsFailed = state.graphFailed = state.reportsFailed = state.heatactFailed = false;
@@ -818,6 +859,7 @@ async function refreshDashboard() {
     ]);
     state.deals = dealsResp.deals || [];
     state.brokers = brokersResp.brokers || [];
+    saveEntityCache({ deals: state.deals, brokers: state.brokers });
     loadAnalytics();
     renderActiveView();
   } catch (e) {
@@ -832,6 +874,28 @@ async function refreshDashboard() {
       </div>`;
     const rb = $("retry-refresh"); if (rb) rb.onclick = refreshDashboard;
   }
+}
+
+/* Optimistic post-mutation updates.
+   After a deal/broker CRUD call, splice the returned entity into local
+   state and re-render IMMEDIATELY — no second roundtrip to refreshDashboard.
+   Analytics still refresh in background so KPIs stay correct. */
+function applyEntityMutation({ kind, mode, id, entity }) {
+  const arr = kind === "deal" ? state.deals : state.brokers;
+  if (mode === "delete") {
+    const out = arr.filter(x => x.id !== id);
+    if (kind === "deal") state.deals = out; else state.brokers = out;
+  } else if (mode === "update" && entity) {
+    const i = arr.findIndex(x => x.id === id);
+    if (i >= 0) arr[i] = { ...arr[i], ...entity };
+  } else if (mode === "create" && entity) {
+    arr.unshift(entity);
+  }
+  saveEntityCache({ deals: state.deals, brokers: state.brokers });
+  renderActiveView();
+  // Refresh analytics in background — KPIs derive from the full dataset
+  // server-side, so keep them accurate without blocking the UI.
+  loadAnalytics();
 }
 
 function renderActiveView() {
@@ -2037,6 +2101,7 @@ async function loadTeams() {
   try {
     const r = await apiGet("/api/v2/teams");
     state.teams = r.teams || [];
+    saveEntityCache({ teams: state.teams });
     // Restore last-active workspace from localStorage; fall back to the
     // default "workspace1" by name; final fallback is first in list.
     const saved = loadWsContext();
@@ -2049,18 +2114,23 @@ async function loadTeams() {
     if (chosen) {
       const firstSelect = state.activeTeamId !== chosen.id;
       state.activeTeamId = chosen.id;
-      // If we switched workspaces (not same as saved), clear the sub-team so
-      // loadActiveTeamData can pick the default sub-team for this workspace.
       if (firstSelect && saved.activeTeamId && saved.activeTeamId !== chosen.id) {
         state.activeSubteamId = null;
       } else if (saved.activeTeamId === chosen.id) {
-        // Same workspace as last session — restore saved sub-team (verified below)
         state.activeSubteamId = saved.activeSubteamId || null;
       }
+      // Block ONLY on the workspace-level fetch (needed for the sidebar
+      // selects). Sub-team data loads in the background so it never blocks
+      // the initial paint.
       await loadActiveTeamData();
-      // After subteams are loaded, pick the best sub-team default.
       pickDefaultSubteam();
-      if (state.activeSubteamId) await loadActiveSubteamData();
+      renderWorkspaceContext();
+      if (state.activeSubteamId) {
+        // Fire-and-forget — re-render view when it lands
+        loadActiveSubteamData()
+          .then(() => { if (state.view === "admin") renderActiveView(); })
+          .catch(() => {});
+      }
     } else {
       state.activeTeamId = null;
       state.activeSubteamId = null;
@@ -2069,7 +2139,6 @@ async function loadTeams() {
   } catch (e) {
     state.teams = [];
     if ((e.message || "").includes("503")) {
-      // Service role not configured — show inline in the Team tab by flagging.
       state.teamsBlocked = "SUPABASE_SERVICE_ROLE_KEY not set on server. Add it in Render → Environment to enable teams.";
     }
   }
@@ -2161,16 +2230,21 @@ async function loadActiveTeamData() {
   const tid = state.activeTeamId;
   if (!tid) return;
   try {
-    const [m, r, i, s] = await Promise.all([
+    // Block only on the 3 fetches needed for sidebar + subteam selection.
+    // Invitations are only surfaced in the Team Manager modal — defer that
+    // roundtrip so it doesn't delay initial paint.
+    const [m, r, s] = await Promise.all([
       apiGet(`/api/v2/teams/${encodeURIComponent(tid)}/members`),
       apiGet(`/api/v2/teams/${encodeURIComponent(tid)}/roles`),
-      apiGet(`/api/v2/teams/${encodeURIComponent(tid)}/invitations`).catch(() => ({ invitations: [] })),
       apiGet(`/api/v2/workspaces/${encodeURIComponent(tid)}/teams`).catch(() => ({ teams: [] })),
     ]);
     state.teamMembers = m.members || [];
     state.teamRoles = r.roles || [];
-    state.teamInvites = i.invitations || [];
     state.subteams = s.teams || [];
+    // Invites in background — only shown when admin opens Team Manager
+    apiGet(`/api/v2/teams/${encodeURIComponent(tid)}/invitations`)
+      .then(i => { state.teamInvites = i.invitations || []; })
+      .catch(() => { state.teamInvites = []; });
     renderWorkspaceContext();
   } catch (e) {
     toast("Failed to load workspace: " + e.message, "err");
@@ -3026,11 +3100,12 @@ function openDealEditor(dealId) {
     };
     $("e-status-msg").innerHTML = '<span class="spin"></span> Saving…';
     try {
-      if (dealId) await apiJson("PUT", `/api/v2/deals/${encodeURIComponent(dealId)}`, payload);
-      else await apiJson("POST", "/api/v2/deals", payload);
+      let entity;
+      if (dealId) entity = await apiJson("PUT", `/api/v2/deals/${encodeURIComponent(dealId)}`, payload);
+      else entity = await apiJson("POST", "/api/v2/deals", payload);
       hide("compose-modal");
       toast(dealId ? "Deal updated" : "Deal created");
-      await refreshDashboard();
+      applyEntityMutation({ kind: "deal", mode: dealId ? "update" : "create", id: dealId, entity });
     } catch (e) {
       $("e-status-msg").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
     }
@@ -3038,8 +3113,11 @@ function openDealEditor(dealId) {
   if (dealId) {
     $("e-delete").onclick = async () => {
       if (!confirm("Delete this deal?")) return;
-      try { await apiJson("DELETE", `/api/v2/deals/${encodeURIComponent(dealId)}`); hide("compose-modal"); toast("Deleted"); await refreshDashboard(); }
-      catch (e) { $("e-status-msg").innerHTML = `<span class="pill pill-bad">${esc(e.message)}</span>`; }
+      try {
+        await apiJson("DELETE", `/api/v2/deals/${encodeURIComponent(dealId)}`);
+        hide("compose-modal"); toast("Deleted");
+        applyEntityMutation({ kind: "deal", mode: "delete", id: dealId });
+      } catch (e) { $("e-status-msg").innerHTML = `<span class="pill pill-bad">${esc(e.message)}</span>`; }
     };
   }
 }
@@ -3080,11 +3158,12 @@ function openBrokerEditor(brokerId) {
     };
     $("b-status-msg").innerHTML = '<span class="spin"></span> Saving…';
     try {
-      if (brokerId) await apiJson("PUT", `/api/v2/brokers/${encodeURIComponent(brokerId)}`, payload);
-      else await apiJson("POST", "/api/v2/brokers", payload);
+      let entity;
+      if (brokerId) entity = await apiJson("PUT", `/api/v2/brokers/${encodeURIComponent(brokerId)}`, payload);
+      else entity = await apiJson("POST", "/api/v2/brokers", payload);
       hide("compose-modal");
       toast(brokerId ? "Broker updated" : "Broker created");
-      await refreshDashboard();
+      applyEntityMutation({ kind: "broker", mode: brokerId ? "update" : "create", id: brokerId, entity });
     } catch (e) {
       $("b-status-msg").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
     }
@@ -3092,8 +3171,11 @@ function openBrokerEditor(brokerId) {
   if (brokerId) {
     $("b-delete").onclick = async () => {
       if (!confirm("Delete this broker?")) return;
-      try { await apiJson("DELETE", `/api/v2/brokers/${encodeURIComponent(brokerId)}`); hide("compose-modal"); toast("Deleted"); await refreshDashboard(); }
-      catch (e) { $("b-status-msg").innerHTML = `<span class="pill pill-bad">${esc(e.message)}</span>`; }
+      try {
+        await apiJson("DELETE", `/api/v2/brokers/${encodeURIComponent(brokerId)}`);
+        hide("compose-modal"); toast("Deleted");
+        applyEntityMutation({ kind: "broker", mode: "delete", id: brokerId });
+      } catch (e) { $("b-status-msg").innerHTML = `<span class="pill pill-bad">${esc(e.message)}</span>`; }
     };
   }
 }
@@ -3279,15 +3361,21 @@ function renderIntakeResult(r) {
     if (!did) { toast("Pick a deal to apply to, or click Create new deal", "warn"); return; }
     const patch = flatten();
     if (!Object.keys(patch).length) { toast("No fields extracted to apply", "warn"); return; }
-    try { await apiJson("PUT", `/api/v2/deals/${encodeURIComponent(did)}`, patch); toast("Deal updated"); await refreshDashboard(); }
-    catch (e) { toast(`Update failed: ${e.message}`, "err"); }
+    try {
+      const entity = await apiJson("PUT", `/api/v2/deals/${encodeURIComponent(did)}`, patch);
+      toast("Deal updated");
+      applyEntityMutation({ kind: "deal", mode: "update", id: did, entity });
+    } catch (e) { toast(`Update failed: ${e.message}`, "err"); }
   };
   $("intake-create-deal").onclick = async () => {
     const patch = flatten();
     patch.name = patch.name || `Intake ${new Date().toLocaleDateString()}`;
     patch.status = "incoming leads";
-    try { const r = await apiJson("POST", "/api/v2/deals", patch); toast("Deal created"); await refreshDashboard(); }
-    catch (e) { toast(`Create failed: ${e.message}`, "err"); }
+    try {
+      const entity = await apiJson("POST", "/api/v2/deals", patch);
+      toast("Deal created");
+      applyEntityMutation({ kind: "deal", mode: "create", entity });
+    } catch (e) { toast(`Create failed: ${e.message}`, "err"); }
   };
 }
 
