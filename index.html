@@ -5,11 +5,38 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>BrokerFlow</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+<script src="https://d3js.org/d3.v7.min.js"></script>
 <script type="module">
   import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
   window.__createSupabaseClient = createClient;
 </script>
 <style>
+  .drop-zone { border: 2px dashed #1f2937; border-radius: 12px; padding: 32px; text-align: center; transition: all .15s; cursor: pointer; }
+  .drop-zone:hover, .drop-zone.drag { border-color: #2563eb; background: rgba(37,99,235,0.06); }
+  .conf-bar { height: 4px; border-radius: 2px; background: #1f2937; overflow: hidden; margin-top: 4px; }
+  .conf-bar > span { display: block; height: 100%; }
+  .tab { padding: 8px 14px; border-radius: 8px 8px 0 0; font-size: 13px; color: #9ca3af; cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab.active { color: #60a5fa; border-bottom-color: #2563eb; background: rgba(37,99,235,.08); }
+  .funnel-row { display: grid; grid-template-columns: 140px 1fr 60px; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .funnel-bar { height: 22px; background: linear-gradient(90deg, #2563eb 0%, #60a5fa 100%); border-radius: 4px; }
+  .leaflet-container { background: #0b0f17 !important; border-radius: 8px; }
+  .leaflet-popup-content-wrapper { background: #111827; color: #e5e7eb; border: 1px solid #1f2937; }
+  .leaflet-popup-tip { background: #111827; }
+  #graph-svg text { pointer-events: none; user-select: none; }
+  #graph-svg .node-broker { fill: #f59e0b; }
+  #graph-svg .node-deal { fill: #2563eb; }
+  #graph-svg .node-market { fill: #16a34a; }
+  #graph-svg line.edge { stroke: #374151; stroke-opacity: 0.6; }
+  .cell-week { width: 22px; height: 22px; border: 1px solid #0b0f17; }
+  .kpi { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 14px; }
+  .kpi .label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .05em; }
+  .kpi .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  .kpi .delta.up { color: #4ade80; } .kpi .delta.down { color: #f87171; }
   html, body { background: #0b0f17; color: #e5e7eb; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; }
   .btn { background: #2563eb; color: white; padding: 8px 14px; border-radius: 8px; font-weight: 600; }
@@ -698,6 +725,9 @@ async function refreshDashboard() {
     state.brokers = brokersResp.brokers || [];
     // Analytics in background — non-blocking
     apiGet("/api/v2/analytics/summary").then(a => { state.analytics = a; if (["dashboard","heatmap","reports","map"].includes(state.view)) renderActiveView(); }).catch(() => {});
+    apiGet("/api/v2/analytics/graph").then(g => { state.graph = g; if (state.view === "graph") renderActiveView(); }).catch(() => {});
+    apiGet("/api/v2/analytics/reports").then(r => { state.reports = r; if (state.view === "reports") renderActiveView(); }).catch(() => {});
+    apiGet("/api/v2/analytics/heatmap-activity").then(h => { state.heatact = h; if (state.view === "heatmap") renderActiveView(); }).catch(() => {});
     renderActiveView();
   } catch (e) {
     $("view-main").innerHTML = `<div class="card p-4 text-sm text-red-400">${esc(e.message)}</div>`;
@@ -917,76 +947,208 @@ function tplBrokers() {
 }
 
 function tplDocChase() {
-  // Any deal where status implies docs are outstanding
+  const now = Date.now();
   const chaseDeals = state.deals.filter(d => {
     const s = (d.status || "").toLowerCase();
     return s === "incoming leads" || s === "docs requested" || (d.docs_outstanding && d.docs_outstanding.length > 0);
   });
+  // compute age bucket per deal
+  const bucketed = chaseDeals.map(d => {
+    const createdStr = d.date_created || d.created_at || d.orig_source?.date_created;
+    const createdMs = createdStr ? (typeof createdStr === "number" ? Number(createdStr) : Date.parse(createdStr)) : null;
+    const ageDays = createdMs ? Math.floor((now - createdMs) / 86400000) : null;
+    let bucket = "new", color = "pill-ok";
+    if (ageDays === null) { bucket = "unknown"; color = "pill-muted"; }
+    else if (ageDays <= 1) { bucket = `D+${ageDays}`; color = "pill-ok"; }
+    else if (ageDays <= 4) { bucket = `D+${ageDays} warm`; color = "pill-warn"; }
+    else if (ageDays <= 10) { bucket = `D+${ageDays} stale`; color = "pill-warn"; }
+    else { bucket = `D+${ageDays} cold`; color = "pill-bad"; }
+    return { d, ageDays, bucket, color };
+  });
+  bucketed.sort((a, b) => (b.ageDays || 0) - (a.ageDays || 0));
+
+  const byDay = { "D+0-2": [], "D+3-7": [], "D+8-14": [], "D+15+": [], "Unknown": [] };
+  bucketed.forEach(x => {
+    if (x.ageDays === null) byDay["Unknown"].push(x);
+    else if (x.ageDays <= 2) byDay["D+0-2"].push(x);
+    else if (x.ageDays <= 7) byDay["D+3-7"].push(x);
+    else if (x.ageDays <= 14) byDay["D+8-14"].push(x);
+    else byDay["D+15+"].push(x);
+  });
+
   const cadence = ["D+2","D+4","D+7","D+10","D+14"];
 
+  const dayCard = (d, bucket, color, ageDays) => {
+    const broker = state.brokers.find(b => b.id === d.broker_id);
+    const loc = [d.city, d.state].filter(Boolean).join(", ");
+    const missing = Array.isArray(d.docs_outstanding) ? d.docs_outstanding.join(", ") : "—";
+    const borderColor = color === "pill-bad" ? "#7f1d1d" : color === "pill-warn" ? "#78350f" : color === "pill-ok" ? "#052e16" : "#1f2937";
+    return `<div class="card p-4" style="border-left: 4px solid ${borderColor}">
+      <div class="flex items-start justify-between">
+        <div class="flex-1">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold">${esc(d.name || "(untitled)")}</span>
+            <span class="pill ${color}">${esc(bucket)}</span>
+          </div>
+          <div class="text-xs text-gray-500 mt-1">${esc(d.asset_class || "—")} · ${esc(loc || "—")} · ${fmtMoney(d.ask_price)}</div>
+          <div class="text-xs mt-2 text-gray-400">Missing: <span class="text-gray-200">${esc(missing)}</span></div>
+          <div class="text-xs mt-1 text-gray-400">Broker: <span class="text-gray-200">${esc(broker?.name || d.broker_id || "(unlinked)")}</span>${broker?.email ? ` · <span class="text-gray-500">${esc(broker.email)}</span>` : ""}</div>
+        </div>
+        <button class="btn-ghost text-xs" data-deal-id="${esc(d.id)}">Open</button>
+      </div>
+      <div class="mt-3 flex flex-wrap gap-2">
+        ${cadence.map(c => `<button class="btn-ghost text-xs" data-cadence="${c}" data-deal-id="${esc(d.id)}" data-broker-id="${esc(d.broker_id || "")}">${c} · draft</button>`).join("")}
+      </div>
+    </div>`;
+  };
+
+  const groupBlock = (title, arr) => arr.length ? `
+    <div class="mb-5">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm font-semibold text-gray-300">${esc(title)} <span class="text-gray-500 text-xs">· ${arr.length} deal${arr.length === 1 ? "" : "s"}</span></div>
+        <button class="btn-ghost text-xs" data-bulk-cadence="${esc(title)}">Bulk-draft this group →</button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        ${arr.map(x => dayCard(x.d, x.bucket, x.color, x.ageDays)).join("")}
+      </div>
+    </div>` : "";
+
+  const avg = bucketed.filter(x => x.ageDays !== null).reduce((s, x) => s + x.ageDays, 0) / (bucketed.filter(x => x.ageDays !== null).length || 1);
+
   return `
-    <div class="mb-4">
-      <div class="text-2xl font-bold">Doc Chase</div>
-      <div class="text-xs text-gray-500">${chaseDeals.length} deals awaiting documents · Multi-channel cadence</div>
+    <div class="mb-4 flex items-start justify-between">
+      <div>
+        <div class="text-2xl font-bold">Doc Chase</div>
+        <div class="text-xs text-gray-500">${chaseDeals.length} deals awaiting documents · Avg age: ${avg ? avg.toFixed(1) : "—"} days · Multi-channel cadence</div>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn-ghost text-xs" data-chase-refresh>Refresh</button>
+        <button class="btn text-xs" data-chase-bulk-all>Bulk-draft all overdue</button>
+      </div>
+    </div>
+    <div class="grid grid-cols-5 gap-3 mb-4">
+      <div class="kpi"><div class="label">Fresh (0-2d)</div><div class="value text-green-400">${byDay["D+0-2"].length}</div></div>
+      <div class="kpi"><div class="label">Warm (3-7d)</div><div class="value text-yellow-400">${byDay["D+3-7"].length}</div></div>
+      <div class="kpi"><div class="label">Stale (8-14d)</div><div class="value text-orange-400">${byDay["D+8-14"].length}</div></div>
+      <div class="kpi"><div class="label">Cold (15+d)</div><div class="value text-red-400">${byDay["D+15+"].length}</div></div>
+      <div class="kpi"><div class="label">Unknown</div><div class="value text-gray-400">${byDay["Unknown"].length}</div></div>
     </div>
     <div class="card p-3 mb-4 text-xs text-gray-400">
-      <b class="text-gray-200">Cadence:</b>
-      D+0 initial ask · <b>D+2</b> warm email · <b>D+4</b> SMS · <b>D+7</b> call + email · <b>D+10</b> call + SMS · <b>D+14</b> relationship email. Click a day to AI-draft a tailored follow-up.
+      <b class="text-gray-200">Cadence playbook:</b>
+      D+0 initial ask · <b>D+2</b> warm email · <b>D+4</b> SMS · <b>D+7</b> call + email · <b>D+10</b> call + SMS · <b>D+14</b> relationship email. Click a day on any card to AI-draft a tailored follow-up.
     </div>
-    <div class="space-y-3">
-      ${chaseDeals.length ? chaseDeals.map(d => {
-        const broker = state.brokers.find(b => b.id === d.broker_id);
-        const loc = [d.city, d.state].filter(Boolean).join(", ");
-        const missing = Array.isArray(d.docs_outstanding) ? d.docs_outstanding.join(", ") : "—";
-        return `<div class="card p-4">
-          <div class="flex items-start justify-between">
-            <div>
-              <div class="font-semibold">${esc(d.name || "(untitled)")}</div>
-              <div class="text-xs text-gray-500 mt-1">${esc(d.asset_class || "—")} · ${esc(loc || "—")} · ${fmtMoney(d.ask_price)}</div>
-              <div class="text-xs mt-2 text-gray-400">Missing: <span class="text-gray-200">${esc(missing)}</span></div>
-              <div class="text-xs mt-1 text-gray-400">Broker: <span class="text-gray-200">${esc(broker?.name || d.broker_id || "(unlinked)")}</span></div>
-            </div>
-            <button class="btn-ghost text-xs" data-deal-id="${esc(d.id)}">Open</button>
-          </div>
-          <div class="mt-3 flex flex-wrap gap-2">
-            ${cadence.map(c => `<button class="btn-ghost text-xs" data-cadence="${c}" data-deal-id="${esc(d.id)}" data-broker-id="${esc(d.broker_id || "")}">${c} · draft</button>`).join("")}
-          </div>
-        </div>`;
-      }).join("") : `<div class="card p-6 text-center text-sm text-gray-500">No deals awaiting docs 🎉</div>`}
-    </div>
+    ${chaseDeals.length ? (
+      groupBlock("D+15+", byDay["D+15+"]) +
+      groupBlock("D+8-14", byDay["D+8-14"]) +
+      groupBlock("D+3-7", byDay["D+3-7"]) +
+      groupBlock("D+0-2", byDay["D+0-2"]) +
+      groupBlock("Unknown", byDay["Unknown"])
+    ) : `<div class="card p-6 text-center text-sm text-gray-500">No deals awaiting docs 🎉</div>`}
   `;
 }
 
 function tplIntake() {
   return `
     <div class="mb-4">
-      <div class="text-2xl font-bold">Doc Intake</div>
-      <div class="text-xs text-gray-500">Upload a T-12, P&L, OM, or Rent Roll PDF. Fields auto-extract.</div>
+      <div class="text-2xl font-bold">Deep Intake Analyzer</div>
+      <div class="text-xs text-gray-500">Drop OMs, T-12s, P&Ls, rent rolls, broker emails. Paste text. AI extracts 40+ fields with confidence + source attribution.</div>
     </div>
-    <div class="card p-6">
-      <input type="file" id="intake-file" accept="application/pdf" class="text-sm" />
-      <button id="intake-parse" class="btn ml-3">Parse PDF</button>
-      <div id="intake-result" class="mt-4"></div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+      <div class="lg:col-span-2 space-y-3">
+        <div class="card p-3">
+          <div class="text-xs text-gray-500 uppercase tracking-wide mb-2">1. Upload files</div>
+          <div class="drop-zone" id="intake-drop">
+            <div class="text-3xl mb-2">📄</div>
+            <div class="text-sm text-gray-300">Drop PDFs, XLSX, CSVs, DOCX, TXT, or EML here</div>
+            <div class="text-xs text-gray-500 mt-1">or click to browse · multi-file supported</div>
+            <input type="file" id="intake-files" multiple accept=".pdf,.xlsx,.xls,.csv,.docx,.txt,.eml,.msg" class="hidden" />
+          </div>
+          <div id="intake-filelist" class="mt-3 text-xs text-gray-400"></div>
+        </div>
+        <div class="card p-3">
+          <div class="text-xs text-gray-500 uppercase tracking-wide mb-2">2. Or paste broker text</div>
+          <textarea id="intake-text" rows="6" class="input text-sm" placeholder="Paste a broker email body, teaser blurb, or rent roll excerpt here…"></textarea>
+        </div>
+        <div class="flex gap-2">
+          <button id="intake-run" class="btn flex-1">Deep-parse →</button>
+          <button id="intake-clear" class="btn-ghost text-xs">Clear</button>
+        </div>
+      </div>
+
+      <div class="lg:col-span-3">
+        <div id="intake-result" class="card p-6 text-sm text-gray-500 text-center">
+          <div class="text-4xl mb-3">🔍</div>
+          <div class="font-semibold text-gray-300">Ready when you are</div>
+          <div class="text-xs mt-2">Upload or paste above, then hit <b>Deep-parse</b>. The analyzer will pull property, financials, market, rent roll, T-12 signals, OM highlights, broker details, and red flags — each with a confidence score and a source snippet.</div>
+        </div>
+      </div>
     </div>
   `;
 }
 
 function tplHeatmap() {
   const a = state.analytics;
+  const ha = state.heatact;
   if (!a) return `<div class="card p-6 text-center text-sm text-gray-500"><span class="spin"></span> Loading analytics…</div>`;
-  const assets = Object.keys(a.heatmap).sort();
+  const assets = Object.keys(a.heatmap || {}).sort();
   const stages = ["incoming leads","docs requested","docs complete","underwriting","loi","under contract","closed","dead"];
-  if (assets.length === 0) return `<div class="card p-6 text-sm text-gray-500">No deals to visualize yet.</div>`;
-
   const maxVal = Math.max(1, ...assets.flatMap(ac => stages.map(st => a.heatmap[ac]?.[st] || 0)));
+
+  const activityBlock = () => {
+    if (!ha) return `<div class="card p-4 text-xs text-gray-500"><span class="spin"></span> Loading activity heatmap…</div>`;
+    const weeks = ha.weeks || [];
+    const rows = ha.rows || [];
+    if (!rows.length) return `<div class="card p-4 text-xs text-gray-500">No broker touchpoints in the last 12 weeks yet.</div>`;
+    const maxCell = Math.max(1, ...rows.flatMap(r => r.cells));
+    const wkLabels = weeks.map(w => { const m = new Date(w); return `${m.getMonth()+1}/${m.getDate()}`; });
+    return `
+      <div class="card p-4 overflow-x-auto">
+        <div class="flex items-center justify-between mb-3">
+          <div class="text-sm font-semibold">Broker × Week activity (last ${weeks.length} weeks)</div>
+          <div class="flex items-center gap-2 text-xs text-gray-500">
+            <span>low</span>
+            <span class="cell-week" style="background:rgba(37,99,235,0.12)"></span>
+            <span class="cell-week" style="background:rgba(37,99,235,0.35)"></span>
+            <span class="cell-week" style="background:rgba(37,99,235,0.6)"></span>
+            <span class="cell-week" style="background:rgba(37,99,235,0.9)"></span>
+            <span>high</span>
+          </div>
+        </div>
+        <table class="text-xs">
+          <thead><tr>
+            <th class="p-2 text-left text-gray-500" style="min-width:180px">Broker</th>
+            ${wkLabels.map(l => `<th class="p-1 text-gray-500 text-center text-[10px]" style="width:22px">${esc(l)}</th>`).join("")}
+            <th class="p-2 text-right text-gray-500">Σ</th>
+          </tr></thead>
+          <tbody>
+            ${rows.slice(0, 40).map(r => `<tr class="hover:bg-gray-800/40 cursor-pointer" data-broker-id="${esc(r.broker_id)}">
+              <td class="p-2">
+                <div class="font-medium text-gray-200">${esc(r.name)}</div>
+                <div class="text-[10px] text-gray-500">${esc(r.firm || "")} · ${esc(r.tier || "Cold")}</div>
+              </td>
+              ${r.cells.map(n => {
+                const alpha = n === 0 ? 0.06 : 0.15 + (n / maxCell) * 0.8;
+                return `<td class="text-center" style="background:rgba(37,99,235,${alpha}); color:${n > 0 ? "#fff" : "#4b5563"};" title="${n} touchpoint${n === 1 ? "" : "s"}"><span class="cell-week inline-block">${n || ""}</span></td>`;
+              }).join("")}
+              <td class="p-2 text-right font-semibold text-gray-200">${r.total}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+  };
 
   return `
     <div class="mb-4">
-      <div class="text-2xl font-bold">Heatmap</div>
-      <div class="text-xs text-gray-500">Asset class × Pipeline stage</div>
+      <div class="text-2xl font-bold">Heatmaps</div>
+      <div class="text-xs text-gray-500">Pipeline density & broker engagement over time</div>
     </div>
-    <div class="card p-4 overflow-x-auto">
-      <table class="text-xs">
+
+    ${activityBlock()}
+
+    <div class="card p-4 overflow-x-auto mt-4">
+      <div class="text-sm font-semibold mb-3">Asset class × Pipeline stage</div>
+      ${assets.length ? `<table class="text-xs">
         <thead><tr>
           <th class="p-2 text-left text-gray-500"></th>
           ${stages.map(s => `<th class="p-2 text-gray-500 text-center" style="min-width:90px">${esc(s)}</th>`).join("")}
@@ -1001,48 +1163,51 @@ function tplHeatmap() {
             }).join("")}
           </tr>`).join("")}
         </tbody>
-      </table>
+      </table>` : `<div class="text-xs text-gray-500">No deal data yet.</div>`}
     </div>
   `;
 }
 
 function tplGraph() {
-  const W = 700, H = 500, cx = W/2, cy = H/2, R = 180;
-  const brokers = state.brokers.slice(0, 20);
-  const deals = state.deals.slice(0, 30);
-  const bPos = {}, dPos = {};
-  brokers.forEach((b, i) => {
-    const t = (i / Math.max(1, brokers.length)) * 2 * Math.PI;
-    bPos[b.id] = { x: cx + Math.cos(t) * (R * 0.5), y: cy + Math.sin(t) * (R * 0.5) };
-  });
-  deals.forEach((d, i) => {
-    const t = (i / Math.max(1, deals.length)) * 2 * Math.PI;
-    dPos[d.id] = { x: cx + Math.cos(t) * R, y: cy + Math.sin(t) * R };
-  });
-  const lines = deals.map(d => {
-    const bp = bPos[d.broker_id];
-    const dp = dPos[d.id];
-    if (!bp || !dp) return "";
-    return `<line x1="${bp.x}" y1="${bp.y}" x2="${dp.x}" y2="${dp.y}" stroke="#1f2937" stroke-width="1"/>`;
-  }).join("");
-  const bNodes = brokers.map(b => {
-    const p = bPos[b.id];
-    return `<g><circle cx="${p.x}" cy="${p.y}" r="6" fill="#f59e0b"/><text x="${p.x}" y="${p.y-10}" text-anchor="middle" font-size="10" fill="#fbbf24">${esc((b.name || "").slice(0, 12))}</text></g>`;
-  }).join("");
-  const dNodes = deals.map(d => {
-    const p = dPos[d.id];
-    return `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#2563eb"/>`;
-  }).join("");
-
+  const g = state.graph;
+  const ready = !!(g && g.nodes && g.nodes.length);
   return `
-    <div class="mb-4">
-      <div class="text-2xl font-bold">Broker ↔ Deal Graph</div>
-      <div class="text-xs text-gray-500">Inner ring: brokers (orange) · Outer ring: deals (blue)</div>
+    <div class="mb-4 flex items-start justify-between">
+      <div>
+        <div class="text-2xl font-bold">Relationship Network</div>
+        <div class="text-xs text-gray-500">Force-directed graph of brokers, deals, and markets. Drag nodes, zoom, filter.</div>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <label class="flex items-center gap-1"><input type="checkbox" id="g-show-broker" checked /> <span class="text-amber-400">●</span> Brokers</label>
+        <label class="flex items-center gap-1"><input type="checkbox" id="g-show-deal" checked /> <span class="text-blue-400">●</span> Deals</label>
+        <label class="flex items-center gap-1"><input type="checkbox" id="g-show-market" checked /> <span class="text-green-400">●</span> Markets</label>
+        <button class="btn-ghost text-xs" id="g-reset">Reset layout</button>
+      </div>
     </div>
-    <div class="card p-4 flex justify-center">
-      <svg viewBox="0 0 ${W} ${H}" style="max-width:100%; height:auto">
-        ${lines}${bNodes}${dNodes}
-      </svg>
+    <div class="grid grid-cols-1 lg:grid-cols-4 gap-3">
+      <div class="lg:col-span-3 card p-2" style="height: 640px">
+        ${ready ? `<svg id="graph-svg" viewBox="0 0 900 620" style="width:100%;height:100%"></svg>` : `<div class="h-full flex items-center justify-center text-sm text-gray-500"><span class="spin mr-2"></span> Building graph…</div>`}
+      </div>
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-2">Legend</div>
+        <div class="text-xs space-y-1">
+          <div><span class="inline-block w-3 h-3 rounded-full bg-amber-500 mr-2"></span>Broker — size ∝ deal count</div>
+          <div><span class="inline-block w-3 h-3 rounded-full bg-blue-600 mr-2"></span>Deal — color varies by stage</div>
+          <div><span class="inline-block w-3 h-3 rounded-full bg-green-600 mr-2"></span>Market (state) — hub anchor</div>
+          <div class="text-gray-500 mt-2">Edge width ∝ touchpoint volume.</div>
+        </div>
+        <div class="text-sm font-semibold mt-5 mb-2">Stats</div>
+        <div class="text-xs text-gray-400 space-y-1" id="g-stats">
+          ${ready ? `
+            <div>Nodes: <b class="text-gray-200">${g.nodes.length}</b></div>
+            <div>Edges: <b class="text-gray-200">${g.links.length}</b></div>
+            <div>Brokers: <b class="text-amber-400">${g.nodes.filter(n => n.type === "broker").length}</b></div>
+            <div>Deals: <b class="text-blue-400">${g.nodes.filter(n => n.type === "deal").length}</b></div>
+            <div>Markets: <b class="text-green-400">${g.nodes.filter(n => n.type === "market").length}</b></div>
+          ` : ""}
+        </div>
+        <div id="g-hover" class="text-xs text-gray-300 mt-4 p-2 border border-gray-800 rounded min-h-[80px]">Hover a node for details</div>
+      </div>
     </div>
   `;
 }
@@ -1050,30 +1215,130 @@ function tplGraph() {
 function tplMap() {
   const byState = (state.analytics?.by_state) || {};
   const states = Object.entries(byState).sort((a, b) => b[1] - a[1]);
+  const dealsWithLoc = state.deals.filter(d => (d.city && d.state) || d.lat);
+
   return `
-    <div class="mb-4">
-      <div class="text-2xl font-bold">Deals by State</div>
-      <div class="text-xs text-gray-500">${states.length} states with activity</div>
+    <div class="mb-4 flex items-start justify-between">
+      <div>
+        <div class="text-2xl font-bold">Geographic Map</div>
+        <div class="text-xs text-gray-500">${dealsWithLoc.length} geo-located deals · ${states.length} states with activity</div>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <label class="flex items-center gap-1"><input type="checkbox" id="m-layer-pins" checked /> Pins</label>
+        <label class="flex items-center gap-1"><input type="checkbox" id="m-layer-cluster" checked /> Cluster</label>
+        <label class="flex items-center gap-1"><input type="checkbox" id="m-layer-heat" /> Heat</label>
+        <select id="m-filter-asset" class="input text-xs" style="width:auto">
+          <option value="">All asset classes</option>
+          ${ASSET_CLASSES.map(a => `<option>${a}</option>`).join("")}
+        </select>
+        <button class="btn-ghost text-xs" id="m-geocode-all">Geocode missing</button>
+      </div>
     </div>
-    <div class="card p-4 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-      ${states.length ? states.map(([st, n]) => `
-        <div class="border border-gray-800 rounded p-3 text-center hover:border-blue-500">
-          <div class="text-2xl font-bold">${n}</div>
-          <div class="text-xs text-gray-500 mt-1">${esc(st)}</div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-4 gap-3">
+      <div class="lg:col-span-3 card p-1 overflow-hidden">
+        <div id="deal-map" style="height: 620px; border-radius: 8px"></div>
+      </div>
+      <div class="card p-4 space-y-3">
+        <div>
+          <div class="text-sm font-semibold mb-2">Top states</div>
+          <div class="space-y-1 text-xs">
+            ${states.slice(0, 12).map(([st, n]) => `
+              <div class="flex items-center justify-between hover:bg-gray-800/40 px-2 py-1 rounded cursor-pointer" data-state="${esc(st)}">
+                <span>${esc(st)}</span>
+                <span class="text-gray-400">${n} deal${n === 1 ? "" : "s"}</span>
+              </div>`).join("") || `<div class="text-gray-500">No data</div>`}
+          </div>
         </div>
-      `).join("") : `<div class="text-sm text-gray-500 col-span-6">No state data yet.</div>`}
+        <div>
+          <div class="text-sm font-semibold mb-2">MSA hotspots</div>
+          <div class="text-xs text-gray-500" id="m-msa">(populating from geocoded deals…)</div>
+        </div>
+        <div class="text-xs text-gray-500">
+          <div class="mb-1 font-semibold text-gray-400">Map key</div>
+          <div>🔵 MF · 🟡 Hotel · 🟢 MHP/RV · 🟣 Self-Storage · ⬛ Other</div>
+        </div>
+      </div>
     </div>
   `;
 }
 
 function tplReports() {
   const a = state.analytics;
+  const r = state.reports;
   if (!a) return `<div class="card p-6 text-center text-sm text-gray-500"><span class="spin"></span> Loading analytics…</div>`;
   const velocity = Object.entries(a.velocity || {}).sort();
   const maxV = Math.max(1, ...velocity.map(v => v[1]));
 
+  const funnelBlock = () => {
+    if (!r || !r.funnel) return `<div class="text-xs text-gray-500"><span class="spin"></span> Loading funnel…</div>`;
+    const f = r.funnel;
+    const max = Math.max(1, ...f.map(s => s.count));
+    return `<div>${f.map(s => `
+      <div class="funnel-row">
+        <div class="text-xs text-gray-400">${esc(s.stage)}</div>
+        <div class="funnel-bar" style="width:${(s.count / max) * 100}%"></div>
+        <div class="text-xs text-right text-gray-200"><b>${s.count}</b> <span class="text-gray-500">(${s.conversion_pct}%)</span></div>
+      </div>`).join("")}</div>`;
+  };
+
+  const avgDaysBlock = () => {
+    if (!r || !r.avg_days_in_stage) return "";
+    const e = Object.entries(r.avg_days_in_stage).sort((a, b) => b[1] - a[1]);
+    return `<div class="text-xs space-y-1">${e.map(([k, v]) => `
+      <div class="flex justify-between"><span class="text-gray-400">${esc(k)}</span><span class="text-gray-200">${v.toFixed(1)} d</span></div>
+    `).join("")}</div>`;
+  };
+
+  const crossBlock = () => {
+    if (!r || !r.tier_x_asset) return "";
+    const tiers = Object.keys(r.tier_x_asset).sort();
+    const allAssets = new Set();
+    tiers.forEach(t => Object.keys(r.tier_x_asset[t] || {}).forEach(a => allAssets.add(a)));
+    const assets = [...allAssets].sort();
+    const max = Math.max(1, ...tiers.flatMap(t => assets.map(a => r.tier_x_asset[t]?.[a] || 0)));
+    return `<table class="text-xs w-full">
+      <thead><tr><th class="p-1 text-left text-gray-500">Tier</th>${assets.map(a => `<th class="p-1 text-gray-500 text-center">${esc(a)}</th>`).join("")}</tr></thead>
+      <tbody>${tiers.map(t => `<tr><td class="p-1 font-medium">${esc(t)}</td>${assets.map(a => {
+        const n = r.tier_x_asset[t]?.[a] || 0;
+        const alpha = n === 0 ? 0.06 : 0.15 + (n / max) * 0.6;
+        return `<td class="p-1 text-center" style="background:rgba(16,185,129,${alpha}); color:${n > 0 ? "#fff" : "#6b7280"}">${n}</td>`;
+      }).join("")}</tr>`).join("")}</tbody>
+    </table>`;
+  };
+
+  const leaderboard = (r && r.leaderboard) ? r.leaderboard : (a.broker_scorecard || []).map(x => ({
+    broker_id: x.broker_id, name: x.name, firm: x.firm,
+    total: x.deal_count, active: 0, closed: 0, docs_in_rate: 0, close_rate: x.conversion_pct, score: x.score
+  }));
+
   return `
-    <div class="mb-4"><div class="text-2xl font-bold">Reports</div><div class="text-xs text-gray-500">Velocity · Broker scorecard</div></div>
+    <div class="mb-4 flex items-start justify-between">
+      <div>
+        <div class="text-2xl font-bold">Reports</div>
+        <div class="text-xs text-gray-500">Funnel · Velocity · Stage timing · Broker leaderboard · Tier × Asset</div>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn-ghost text-xs" id="rpt-export-csv">Export CSV</button>
+        <button class="btn-ghost text-xs" id="rpt-export-json">Export JSON</button>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-4">
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-3">Conversion funnel</div>
+        ${funnelBlock()}
+        ${r && typeof r.cadence_conversion_pct === "number" ? `<div class="text-xs text-gray-500 mt-3 border-t border-gray-800 pt-2">Cadence → doc-in conversion: <b class="text-green-400">${r.cadence_conversion_pct}%</b></div>` : ""}
+      </div>
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-3">Avg days in stage</div>
+        ${avgDaysBlock() || `<div class="text-xs text-gray-500">No timing data yet.</div>`}
+      </div>
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-3">Tier × Asset class</div>
+        ${crossBlock() || `<div class="text-xs text-gray-500">No data.</div>`}
+      </div>
+    </div>
 
     <div class="card p-4 mb-4">
       <div class="text-sm font-semibold mb-3">Deal velocity (by month created)</div>
@@ -1084,25 +1349,27 @@ function tplReports() {
             <div class="h-full bg-blue-600" style="width:${(n/maxV)*100}%"></div>
           </div>
           <div class="w-8 text-right">${n}</div>
-        </div>
-      `).join("")}</div>` : `<div class="text-xs text-gray-500">No data yet.</div>`}
+        </div>`).join("")}</div>` : `<div class="text-xs text-gray-500">No data yet.</div>`}
     </div>
 
     <div class="card p-4">
-      <div class="text-sm font-semibold mb-3">Broker scorecard</div>
+      <div class="text-sm font-semibold mb-3">Broker leaderboard</div>
       <table class="w-full text-sm">
         <thead class="text-xs text-gray-500 border-b border-gray-800 text-left">
-          <tr><th class="p-2">Broker</th><th>Firm</th><th class="text-right">Deals</th><th class="text-right">Complete</th><th class="text-right">Conv %</th><th class="text-right">Score</th></tr>
+          <tr><th class="p-2">#</th><th>Broker</th><th>Firm</th><th class="text-right">Total</th><th class="text-right">Active</th><th class="text-right">Closed</th><th class="text-right">Docs-in %</th><th class="text-right">Close %</th><th class="text-right">Score</th></tr>
         </thead>
         <tbody>
-          ${(a.broker_scorecard || []).map(s => `<tr class="border-b border-gray-800 hover:bg-gray-800/40 cursor-pointer" data-broker-id="${esc(s.broker_id)}">
+          ${leaderboard.slice(0, 25).map((s, i) => `<tr class="border-b border-gray-800 hover:bg-gray-800/40 cursor-pointer" data-broker-id="${esc(s.broker_id)}">
+            <td class="p-2 text-gray-500">${i + 1}</td>
             <td class="p-2 font-medium">${esc(s.name || "(?)")}</td>
             <td>${esc(s.firm || "—")}</td>
-            <td class="text-right">${s.deal_count}</td>
-            <td class="text-right">${s.complete_count}</td>
-            <td class="text-right">${s.conversion_pct}%</td>
-            <td class="text-right font-semibold">${s.score}</td>
-          </tr>`).join("") || `<tr><td colspan="6" class="p-4 text-center text-gray-500 text-xs">No scorecard data.</td></tr>`}
+            <td class="text-right">${s.total ?? s.deal_count ?? 0}</td>
+            <td class="text-right">${s.active ?? 0}</td>
+            <td class="text-right">${s.closed ?? 0}</td>
+            <td class="text-right">${s.docs_in_rate ?? 0}%</td>
+            <td class="text-right">${s.close_rate ?? 0}%</td>
+            <td class="text-right font-semibold text-blue-400">${s.score ?? 0}</td>
+          </tr>`).join("") || `<tr><td colspan="9" class="p-4 text-center text-gray-500 text-xs">No leaderboard data yet.</td></tr>`}
         </tbody>
       </table>
     </div>
@@ -1114,20 +1381,100 @@ function tplUnderwriting() {
     const s = (d.status || "").toLowerCase();
     return s === "docs complete" || s === "underwriting";
   });
+
+  const quickCalc = (d) => {
+    const ask = Number(d.ask_price) || 0;
+    const noi = Number(d.noi) || 0;
+    const units = Number(d.units) || 0;
+    const capRaw = (d.cap_rate || "").toString().replace("%","").trim();
+    const capPct = Number(capRaw) || (ask && noi ? (noi / ask) * 100 : 0);
+    const impliedNoi = capPct && ask ? ask * (capPct / 100) : noi;
+    const ppu = units && ask ? ask / units : 0;
+    // Quick DSCR at 70% LTV, 6.5% rate, 30y amort
+    const loan = ask * 0.70;
+    const r = 0.065 / 12;
+    const n = 360;
+    const monthly = loan && r ? (loan * r) / (1 - Math.pow(1 + r, -n)) : 0;
+    const annualDebt = monthly * 12;
+    const dscr = annualDebt ? (impliedNoi / annualDebt) : 0;
+    // Simple 5-yr NOI assume 3% growth, exit cap +50bps
+    const growth = 0.03;
+    const noiY5 = impliedNoi * Math.pow(1 + growth, 5);
+    const exitCap = (capPct + 0.5) / 100;
+    const exitVal = exitCap ? noiY5 / exitCap : 0;
+    // Crude unlevered IRR approximation
+    let irr = 0;
+    if (ask > 0 && exitVal > 0) {
+      const cashFlows = [impliedNoi, impliedNoi*1.03, impliedNoi*1.06, impliedNoi*1.09, impliedNoi*1.125 + exitVal];
+      let lo = -0.5, hi = 2.0;
+      for (let k = 0; k < 60; k++) {
+        const mid = (lo + hi) / 2;
+        let npv = -ask;
+        cashFlows.forEach((cf, i) => npv += cf / Math.pow(1 + mid, i + 1));
+        if (npv > 0) lo = mid; else hi = mid;
+      }
+      irr = (lo + hi) / 2;
+    }
+    return { ask, noi: impliedNoi, capPct, ppu, dscr, noiY5, exitVal, irr };
+  };
+
+  const sensitivityHtml = (d) => {
+    const base = quickCalc(d);
+    if (!base.ask) return `<div class="text-xs text-gray-500">Need ask price for sensitivity.</div>`;
+    const capOffsets = [-50, -25, 0, 25, 50];
+    const rentOffsets = [-5, -2.5, 0, 2.5, 5];
+    return `<table class="text-xs w-full">
+      <thead><tr><th class="text-left text-gray-500 p-1">Rent Δ ↓ / Cap Δbps →</th>${capOffsets.map(c => `<th class="text-center text-gray-500 p-1">${c >= 0 ? "+" : ""}${c}</th>`).join("")}</tr></thead>
+      <tbody>
+        ${rentOffsets.map(ro => `<tr><td class="p-1 text-gray-400">${ro >= 0 ? "+" : ""}${ro}%</td>${capOffsets.map(co => {
+          const adjNoi = base.noi * (1 + ro / 100);
+          const adjCap = (base.capPct + co / 100) / 100;
+          const adjVal = adjCap ? adjNoi / adjCap : 0;
+          const delta = base.ask ? ((adjVal - base.ask) / base.ask) * 100 : 0;
+          const col = delta >= 0 ? "#4ade80" : "#f87171";
+          return `<td class="p-1 text-center" style="color:${col}">${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%</td>`;
+        }).join("")}</tr>`).join("")}
+      </tbody>
+    </table>`;
+  };
+
   return `
-    <div class="mb-4"><div class="text-2xl font-bold">Underwriting Queue</div>
-    <div class="text-xs text-gray-500">${queue.length} deals with docs in, ready for model</div></div>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+    <div class="mb-4 flex items-start justify-between">
+      <div>
+        <div class="text-2xl font-bold">Underwriting Queue</div>
+        <div class="text-xs text-gray-500">${queue.length} deals with docs in · Quick-model per card (70/30 LTV, 6.5% int, 3% growth)</div>
+      </div>
+      <button class="btn-ghost text-xs" id="uw-export">Export UW snapshot</button>
+    </div>
+    <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
       ${queue.length ? queue.map(d => {
         const loc = [d.city, d.state].filter(Boolean).join(", ");
-        return `<div class="card p-4 cursor-pointer hover:border-blue-500" data-deal-id="${esc(d.id)}">
-          <div class="font-semibold">${esc(d.name || "(untitled)")}</div>
-          <div class="text-xs text-gray-500 mt-1">${esc(d.asset_class || "—")} · ${esc(loc || "—")}</div>
-          <div class="grid grid-cols-2 gap-2 mt-3 text-xs">
-            <div>Ask: <b class="text-gray-200">${fmtMoney(d.ask_price)}</b></div>
-            <div>NOI: <b class="text-gray-200">${fmtMoney(d.noi)}</b></div>
-            <div>Cap: <b class="text-gray-200">${esc(d.cap_rate || "—")}</b></div>
-            <div>Units: <b class="text-gray-200">${esc(d.units || "—")}</b></div>
+        const q = quickCalc(d);
+        const dscrColor = q.dscr >= 1.35 ? "text-green-400" : q.dscr >= 1.20 ? "text-yellow-400" : q.dscr > 0 ? "text-red-400" : "text-gray-500";
+        const irrColor = q.irr >= 0.18 ? "text-green-400" : q.irr >= 0.12 ? "text-yellow-400" : q.irr > 0 ? "text-red-400" : "text-gray-500";
+        return `<div class="card p-4">
+          <div class="flex items-start justify-between">
+            <div class="cursor-pointer" data-deal-id="${esc(d.id)}">
+              <div class="font-semibold">${esc(d.name || "(untitled)")}</div>
+              <div class="text-xs text-gray-500 mt-1">${esc(d.asset_class || "—")} · ${esc(loc || "—")}</div>
+            </div>
+            <span class="pill pill-muted text-[10px]">${esc(d.status || "—")}</span>
+          </div>
+          <div class="grid grid-cols-3 gap-2 mt-3 text-xs">
+            <div class="kpi !p-2"><div class="label">Ask</div><div class="value text-base">${fmtMoney(q.ask)}</div></div>
+            <div class="kpi !p-2"><div class="label">NOI</div><div class="value text-base">${fmtMoney(q.noi)}</div></div>
+            <div class="kpi !p-2"><div class="label">Cap</div><div class="value text-base">${q.capPct.toFixed(2)}%</div></div>
+            <div class="kpi !p-2"><div class="label">$/Unit</div><div class="value text-base">${q.ppu ? fmtMoney(q.ppu) : "—"}</div></div>
+            <div class="kpi !p-2"><div class="label">DSCR</div><div class="value text-base ${dscrColor}">${q.dscr ? q.dscr.toFixed(2) : "—"}</div></div>
+            <div class="kpi !p-2"><div class="label">5-yr IRR</div><div class="value text-base ${irrColor}">${q.irr ? (q.irr * 100).toFixed(1) + "%" : "—"}</div></div>
+          </div>
+          <details class="mt-3">
+            <summary class="text-xs text-blue-400 cursor-pointer hover:text-blue-300">Sensitivity (value Δ% vs base)</summary>
+            <div class="mt-2">${sensitivityHtml(d)}</div>
+          </details>
+          <div class="mt-3 flex justify-between items-center text-xs">
+            <div class="text-gray-500">Y5 NOI: <b class="text-gray-200">${fmtMoney(q.noiY5)}</b> · Exit: <b class="text-gray-200">${fmtMoney(q.exitVal)}</b></div>
+            <button class="btn-ghost text-xs" data-deal-id="${esc(d.id)}">Open</button>
           </div>
         </div>`;
       }).join("") : `<div class="card p-6 text-sm text-gray-500 col-span-2 text-center">Queue empty. Move a deal to "docs complete" once a T-12 lands.</div>`}
@@ -1136,21 +1483,159 @@ function tplUnderwriting() {
 }
 
 function tplAdmin() {
+  const tab = state.adminTab || "profile";
+  const user = state.session?.user || {};
+  const meta = state.meta || {};
+  const cfg = state.user_cfg || {};
+  const envHealth = state.env_health || {};
+
+  const tabs = [
+    ["profile", "Profile"],
+    ["clickup", "ClickUp"],
+    ["email", "Email / SMTP"],
+    ["sms", "SMS"],
+    ["ai", "AI Keys"],
+    ["team", "Team"],
+    ["health", "Env Health"],
+    ["danger", "Danger zone"],
+  ];
+
+  const kvField = (label, id, val, placeholder = "", type = "text") => `
+    <div class="mb-3">
+      <label class="text-xs text-gray-500">${esc(label)}</label>
+      <input id="${id}" class="input text-sm" type="${type}" value="${esc(val || "")}" placeholder="${esc(placeholder)}" />
+    </div>`;
+
+  const body = () => {
+    if (tab === "profile") return `
+      <div class="grid grid-cols-2 gap-4">
+        <div>
+          <div class="text-sm font-semibold mb-3">Identity</div>
+          ${kvField("Display name", "adm-name", cfg.display_name || "")}
+          ${kvField("Work email", "adm-email", user.email || "", "", "email")}
+          ${kvField("Team / firm", "adm-team", cfg.team || "JP Investment Group")}
+          ${kvField("Role title", "adm-role", cfg.role_title || "Acquisitions")}
+        </div>
+        <div>
+          <div class="text-sm font-semibold mb-3">Session</div>
+          <div class="text-xs text-gray-400 space-y-1">
+            <div>User ID: <code class="text-gray-300">${esc(user.id || "")}</code></div>
+            <div>Session: <span class="pill pill-ok">authed</span></div>
+            <div>Deploy: <code class="text-gray-300">${esc(meta.version || "v2")}</code></div>
+            <div>Deals: <b class="text-gray-200">${state.deals.length}</b> · Brokers: <b class="text-gray-200">${state.brokers.length}</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="flex justify-end mt-4"><button class="btn" data-adm-save="profile">Save profile</button></div>`;
+
+    if (tab === "clickup") return `
+      <div class="text-sm font-semibold mb-3">ClickUp integration</div>
+      ${kvField("Personal API token", "adm-cu-token", cfg.clickup_token_mask || "", "pk_...", "password")}
+      ${kvField("Space ID", "adm-cu-space", cfg.clickup_space_id || "", "e.g. 90031234567")}
+      <div class="flex items-center gap-2 mt-3">
+        <button class="btn-ghost text-xs" data-adm-test="clickup">Test connection</button>
+        <button class="btn-ghost text-xs" id="load-lists">Discover lists</button>
+        <button class="btn text-xs" data-adm-save="clickup">Save</button>
+        <span id="adm-cu-status" class="text-xs ml-2"></span>
+      </div>
+      <div id="lists-out" class="text-xs text-gray-400 mt-4"></div>`;
+
+    if (tab === "email") return `
+      <div class="text-sm font-semibold mb-3">SMTP / Email sender</div>
+      ${kvField("From name", "adm-em-name", cfg.email_from_name || "")}
+      ${kvField("From address", "adm-em-addr", cfg.email_from || "", "you@yourdomain.com", "email")}
+      ${kvField("SMTP host", "adm-em-host", cfg.smtp_host || "", "smtp.gmail.com")}
+      ${kvField("SMTP port", "adm-em-port", cfg.smtp_port || "587", "", "number")}
+      ${kvField("SMTP user", "adm-em-user", cfg.smtp_user || "")}
+      ${kvField("SMTP password / app pw", "adm-em-pw", cfg.smtp_password_mask || "", "••••", "password")}
+      <div class="flex items-center gap-2 mt-3">
+        <button class="btn-ghost text-xs" data-adm-test="smtp">Send test email</button>
+        <button class="btn text-xs" data-adm-save="email">Save</button>
+        <span id="adm-em-status" class="text-xs ml-2"></span>
+      </div>`;
+
+    if (tab === "sms") return `
+      <div class="text-sm font-semibold mb-3">Twilio SMS</div>
+      ${kvField("Account SID", "adm-tw-sid", cfg.twilio_sid_mask || "", "AC...")}
+      ${kvField("Auth token", "adm-tw-tok", cfg.twilio_token_mask || "", "••••", "password")}
+      ${kvField("From number", "adm-tw-from", cfg.twilio_from || "", "+14155551234")}
+      <div class="flex items-center gap-2 mt-3">
+        <button class="btn-ghost text-xs" data-adm-test="sms">Send test SMS</button>
+        <button class="btn text-xs" data-adm-save="sms">Save</button>
+        <span id="adm-tw-status" class="text-xs ml-2"></span>
+      </div>`;
+
+    if (tab === "ai") return `
+      <div class="text-sm font-semibold mb-3">AI provider keys</div>
+      ${kvField("Anthropic API key (for Deep Intake)", "adm-anth", cfg.anthropic_api_key_mask || "", "sk-ant-...", "password")}
+      ${kvField("Preferred model", "adm-model", cfg.anthropic_model || "claude-sonnet-4-5")}
+      <div class="flex items-center gap-2 mt-3">
+        <button class="btn-ghost text-xs" data-adm-test="anthropic">Test key</button>
+        <button class="btn text-xs" data-adm-save="ai">Save</button>
+        <span id="adm-ai-status" class="text-xs ml-2"></span>
+      </div>
+      <div class="text-xs text-gray-500 mt-4">Without a key, Deep Intake falls back to a regex-only extractor — it still works but confidence drops significantly.</div>`;
+
+    if (tab === "team") return `
+      <div class="text-sm font-semibold mb-3">Team members</div>
+      <div class="text-xs text-gray-500">Invite analysts, VPs, ICs. Per-seat billing not yet enabled on this deploy.</div>
+      <div class="card p-3 mt-3">
+        <table class="text-xs w-full">
+          <thead class="text-gray-500 text-left"><tr><th class="p-2">Email</th><th>Role</th><th>Status</th><th></th></tr></thead>
+          <tbody>
+            <tr class="border-t border-gray-800"><td class="p-2">${esc(user.email || "")}</td><td>Owner</td><td><span class="pill pill-ok">active</span></td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="flex gap-2 mt-3">
+        <input id="adm-invite-email" class="input text-sm" placeholder="teammate@jpig.com" />
+        <select id="adm-invite-role" class="input text-sm" style="width:auto"><option>Analyst</option><option>VP</option><option>IC</option></select>
+        <button class="btn text-xs" data-adm-invite>Invite</button>
+      </div>`;
+
+    if (tab === "health") return `
+      <div class="text-sm font-semibold mb-3">Environment health</div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        ${["supabase","clickup","smtp","twilio","anthropic","nominatim"].map(k => {
+          const s = envHealth[k];
+          const cls = s === "ok" ? "pill-ok" : s === "warn" ? "pill-warn" : s === "fail" ? "pill-bad" : "pill-muted";
+          return `<div class="kpi"><div class="label">${esc(k)}</div><div class="value text-base"><span class="pill ${cls}">${esc(s || "unknown")}</span></div></div>`;
+        }).join("")}
+      </div>
+      <button class="btn-ghost text-xs mt-4" data-adm-refresh-health>Re-check all</button>
+      <div class="mt-5">
+        <div class="text-sm font-semibold mb-2">Raw meta</div>
+        <pre class="text-xs text-gray-300 overflow-x-auto p-3 card">${esc(JSON.stringify(meta, null, 2))}</pre>
+      </div>`;
+
+    if (tab === "danger") return `
+      <div class="text-sm font-semibold mb-3 text-red-400">Danger zone</div>
+      <div class="card p-4 border-red-900">
+        <div class="text-sm">Revoke all ClickUp tokens</div>
+        <div class="text-xs text-gray-500 mb-3">Disconnect ClickUp and clear stored credentials.</div>
+        <button class="btn-danger" data-adm-danger="revoke-clickup">Revoke ClickUp</button>
+      </div>
+      <div class="card p-4 border-red-900 mt-3">
+        <div class="text-sm">Clear cached analytics</div>
+        <div class="text-xs text-gray-500 mb-3">Force next load to re-aggregate from ClickUp (slower first render).</div>
+        <button class="btn-danger" data-adm-danger="clear-analytics">Clear analytics</button>
+      </div>`;
+
+    return "";
+  };
+
   return `
-    <div class="mb-4"><div class="text-2xl font-bold">Admin</div><div class="text-xs text-gray-500">Diagnostics + ClickUp space</div></div>
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
-      <div class="card p-4">
-        <div class="text-sm font-semibold mb-2">Meta</div>
-        <pre class="text-xs text-gray-300 overflow-x-auto">${esc(JSON.stringify(state.meta, null, 2))}</pre>
+    <div class="mb-4 flex items-start justify-between">
+      <div>
+        <div class="text-2xl font-bold">Admin</div>
+        <div class="text-xs text-gray-500">Profile · Integrations · Health · Danger zone</div>
       </div>
-      <div class="card p-4">
-        <div class="text-sm font-semibold mb-2">Analytics summary</div>
-        <pre class="text-xs text-gray-300 overflow-x-auto">${esc(state.analytics ? JSON.stringify(state.analytics.totals, null, 2) : "(not loaded)")}</pre>
+    </div>
+    <div class="card p-0 overflow-hidden">
+      <div class="flex border-b border-gray-800 bg-[#0d1220] overflow-x-auto">
+        ${tabs.map(([id, label]) => `<div class="tab ${tab === id ? "active" : ""}" data-adm-tab="${id}">${esc(label)}</div>`).join("")}
       </div>
-      <div class="card p-4 lg:col-span-2">
-        <div class="text-sm font-semibold mb-2">ClickUp space lists <button id="load-lists" class="btn-ghost text-xs ml-2">Load</button></div>
-        <div id="lists-out" class="text-xs text-gray-400">Click Load to fetch all lists in the connected space with classification hints.</div>
-      </div>
+      <div class="p-5">${body()}</div>
     </div>
   `;
 }
@@ -1181,11 +1666,53 @@ function wireViewHandlers() {
   // Brokers search
   const qb = $("f-brokers-q"); if (qb) qb.oninput = () => { state.brokersQuery = qb.value; renderActiveView(); setTimeout(() => $("f-brokers-q")?.focus(), 0); };
 
-  // Intake parse
-  const ip = $("intake-parse"); if (ip) ip.onclick = parseIntakePdf;
+  // Intake: drop zone + paste + deep parse
+  const drop = $("intake-drop"), filesInp = $("intake-files");
+  if (drop && filesInp) {
+    drop.onclick = () => filesInp.click();
+    drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("drag"); };
+    drop.ondragleave = () => drop.classList.remove("drag");
+    drop.ondrop = (e) => {
+      e.preventDefault(); drop.classList.remove("drag");
+      if (e.dataTransfer.files.length) { filesInp.files = e.dataTransfer.files; renderIntakeFileList(); }
+    };
+    filesInp.onchange = renderIntakeFileList;
+  }
+  const runBtn = $("intake-run"); if (runBtn) runBtn.onclick = deepParseIntake;
+  const clrBtn = $("intake-clear"); if (clrBtn) clrBtn.onclick = clearIntake;
 
-  // Admin: load lists
+  // Admin: load lists + tabs
   const ll = $("load-lists"); if (ll) ll.onclick = loadSpaceLists;
+  document.querySelectorAll("[data-adm-tab]").forEach(el => el.onclick = () => { state.adminTab = el.dataset.admTab; renderActiveView(); });
+  document.querySelectorAll("[data-adm-save]").forEach(el => el.onclick = () => saveAdminSection(el.dataset.admSave));
+  document.querySelectorAll("[data-adm-test]").forEach(el => el.onclick = () => testAdminIntegration(el.dataset.admTest));
+  const refHealth = document.querySelector("[data-adm-refresh-health]"); if (refHealth) refHealth.onclick = loadEnvHealth;
+  document.querySelectorAll("[data-adm-danger]").forEach(el => el.onclick = () => runAdminDanger(el.dataset.admDanger));
+  const invBtn = document.querySelector("[data-adm-invite]"); if (invBtn) invBtn.onclick = () => inviteTeammate();
+
+  // Graph: filter toggles + reset
+  ["g-show-broker","g-show-deal","g-show-market"].forEach(id => { const el = $(id); if (el) el.onchange = applyGraphFilters; });
+  const gReset = $("g-reset"); if (gReset) gReset.onclick = () => initGraph(true);
+  if (state.view === "graph" && state.graph) setTimeout(() => initGraph(false), 50);
+
+  // Map: layers + geocode button
+  if (state.view === "map") setTimeout(() => initMap(), 50);
+  ["m-layer-pins","m-layer-cluster","m-layer-heat"].forEach(id => { const el = $(id); if (el) el.onchange = updateMapLayers; });
+  const mGeo = $("m-geocode-all"); if (mGeo) mGeo.onclick = geocodeMissing;
+  const mFilt = $("m-filter-asset"); if (mFilt) mFilt.onchange = updateMapLayers;
+
+  // Doc Chase: bulk actions
+  document.querySelectorAll("[data-bulk-cadence]").forEach(el => el.onclick = () => bulkCadence(el.dataset.bulkCadence));
+  const chBulk = document.querySelector("[data-chase-bulk-all]"); if (chBulk) chBulk.onclick = () => bulkCadence("all-overdue");
+  const chRef = document.querySelector("[data-chase-refresh]"); if (chRef) chRef.onclick = refreshDashboard;
+
+  // Reports: exports
+  const expCsv = $("rpt-export-csv"); if (expCsv) expCsv.onclick = () => exportReport("csv");
+  const expJson = $("rpt-export-json"); if (expJson) expJson.onclick = () => exportReport("json");
+  const uwExp = $("uw-export"); if (uwExp) uwExp.onclick = () => exportUnderwriting();
+
+  // Map: state row → pan
+  document.querySelectorAll("[data-state]").forEach(el => el.onclick = () => focusStateOnMap(el.dataset.state));
 }
 
 async function selectDeal(id) {
@@ -1366,57 +1893,465 @@ async function openCadenceDraft(day, dealId, brokerId) {
   if (status) status.textContent = `Drafting ${day} ${channel.toUpperCase()} for ${broker?.name || ""}…`;
 }
 
-/* ---------- INTAKE (PDF parse) ---------- */
+/* ---------- DEEP INTAKE (multi-file + paste + confidence) ---------- */
 
-async function parseIntakePdf() {
-  const fi = $("intake-file");
-  if (!fi.files || fi.files.length === 0) { toast("Choose a PDF first", "warn"); return; }
-  const file = fi.files[0];
+function renderIntakeFileList() {
+  const filesInp = $("intake-files");
+  if (!filesInp) return;
+  const files = [...(filesInp.files || [])];
+  $("intake-filelist").innerHTML = files.length
+    ? files.map(f => `<div class="flex justify-between py-1 border-b border-gray-800"><span>${esc(f.name)}</span><span class="text-gray-500">${(f.size/1024).toFixed(1)} KB</span></div>`).join("")
+    : "";
+}
+
+function clearIntake() {
+  const fi = $("intake-files"); if (fi) fi.value = "";
+  const tx = $("intake-text"); if (tx) tx.value = "";
+  $("intake-filelist").innerHTML = "";
+  $("intake-result").innerHTML = `<div class="card p-6 text-sm text-gray-500 text-center">
+    <div class="text-4xl mb-3">🔍</div>
+    <div class="font-semibold text-gray-300">Ready when you are</div>
+  </div>`;
+}
+
+async function deepParseIntake() {
+  const fi = $("intake-files");
+  const text = ($("intake-text")?.value || "").trim();
+  const files = fi && fi.files ? [...fi.files] : [];
+  if (files.length === 0 && !text) { toast("Attach a file or paste some text first", "warn"); return; }
+
   const fd = new FormData();
-  fd.append("file", file);
-  $("intake-result").innerHTML = `<div class="card p-3 text-sm text-gray-500"><span class="spin"></span> Extracting text and fields…</div>`;
+  files.forEach(f => fd.append("files", f));
+  if (text) fd.append("text", text);
+
+  $("intake-result").innerHTML = `<div class="card p-6 text-sm text-gray-400 text-center">
+    <span class="spin"></span> Deep-parsing ${files.length} file${files.length === 1 ? "" : "s"}${text ? " + pasted text" : ""}…
+    <div class="text-xs text-gray-500 mt-2">Extracting text · Classifying doc types · Running AI extraction · Scoring confidence…</div>
+  </div>`;
+
   try {
-    const res = await fetch("/api/v2/docs/parse", {
+    const res = await fetch("/api/v2/intake/deep-parse", {
       method: "POST",
       headers: { Authorization: `Bearer ${state.session.access_token}` },
       body: fd,
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const r = await res.json();
-    const ex = r.extracted || {};
-    $("intake-result").innerHTML = `
-      <div class="card p-4">
-        <div class="text-sm font-semibold mb-2">${esc(r.filename)}</div>
-        <div class="text-xs text-gray-500 mb-3">${r.char_count.toLocaleString()} chars extracted</div>
-        <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
-          ${Object.entries(ex).map(([k, v]) => `
-            <div class="border border-gray-800 rounded p-2">
-              <div class="text-xs text-gray-500">${esc(k)}</div>
-              <div class="font-medium">${v === null || v === undefined ? "—" : esc(v)}</div>
-            </div>
-          `).join("")}
-        </div>
-        <div class="mt-4">
-          <label class="text-xs text-gray-500">Apply to deal:</label>
-          <div class="flex gap-2 mt-1">
-            <select id="apply-deal" class="input text-sm"><option value="">(pick a deal)</option>${state.deals.map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("")}</select>
-            <button id="apply-btn" class="btn">Apply extracted fields</button>
-          </div>
-        </div>
-        <details class="mt-4"><summary class="text-xs text-gray-500 cursor-pointer">Raw text preview</summary>
-          <pre class="text-xs text-gray-400 whitespace-pre-wrap mt-2 max-h-60 overflow-y-auto">${esc(r.raw_text_preview || "")}</pre>
-        </details>
-      </div>`;
-    $("apply-btn").onclick = async () => {
-      const did = $("apply-deal").value;
-      if (!did) { toast("Pick a deal", "warn"); return; }
-      const patch = Object.fromEntries(Object.entries(ex).filter(([_, v]) => v !== null && v !== undefined && v !== ""));
-      try { await apiJson("PUT", `/api/v2/deals/${encodeURIComponent(did)}`, patch); toast("Deal updated"); await refreshDashboard(); }
-      catch (e) { toast(`Update failed: ${e.message}`, "err"); }
-    };
+    renderIntakeResult(r);
   } catch (e) {
-    $("intake-result").innerHTML = `<div class="card p-3 text-sm text-red-400">Parse failed: ${esc(e.message)}</div>`;
+    $("intake-result").innerHTML = `<div class="card p-4 text-sm text-red-400">Parse failed: ${esc(e.message)}</div>`;
   }
+}
+
+function renderIntakeResult(r) {
+  const ex = r.extracted || {};
+  const meta = r.meta || {};
+  const summary = r.summary_narrative || r.extracted?.summary_narrative?.value || "";
+
+  const field = (label, obj) => {
+    if (!obj || obj.value === null || obj.value === undefined || obj.value === "") {
+      return `<div class="border border-gray-800 rounded p-2 opacity-50"><div class="text-[10px] text-gray-500 uppercase">${esc(label)}</div><div class="text-xs text-gray-600">—</div></div>`;
+    }
+    const conf = typeof obj.confidence === "number" ? obj.confidence : 0.5;
+    const confPct = Math.round(conf * 100);
+    const color = conf >= 0.75 ? "#4ade80" : conf >= 0.5 ? "#fbbf24" : "#f87171";
+    const src = obj.source ? `<div class="text-[10px] text-gray-500 mt-1 truncate" title="${esc(obj.source)}">${esc(obj.source)}</div>` : "";
+    return `<div class="border border-gray-800 rounded p-2">
+      <div class="text-[10px] text-gray-500 uppercase">${esc(label)}</div>
+      <div class="text-sm font-medium text-gray-100">${esc(obj.value)}</div>
+      <div class="conf-bar"><span style="width:${confPct}%;background:${color}"></span></div>
+      <div class="text-[10px] mt-1" style="color:${color}">${confPct}%</div>
+      ${src}
+    </div>`;
+  };
+
+  const section = (title, fieldMap) => {
+    const entries = Object.entries(fieldMap);
+    if (!entries.length) return "";
+    return `<div class="mb-5">
+      <div class="text-xs text-gray-500 uppercase tracking-wide mb-2">${esc(title)}</div>
+      <div class="grid grid-cols-2 md:grid-cols-3 gap-2">${entries.map(([k, v]) => field(k.replace(/_/g," "), v)).join("")}</div>
+    </div>`;
+  };
+
+  const sections = [
+    ["Property", ex.property || {}],
+    ["Financials", ex.financials || {}],
+    ["Market", ex.market || {}],
+    ["Rent roll", ex.rent_roll || {}],
+    ["T-12 signals", ex.t12 || {}],
+    ["OM highlights", ex.om_highlights || {}],
+    ["Broker", ex.broker || {}],
+  ];
+
+  const redFlags = ex.red_flags || {};
+  const redFlagArr = Object.entries(redFlags).filter(([_, v]) => v && v.value && v.value !== "none" && v.value !== "None");
+
+  $("intake-result").innerHTML = `
+    <div class="card p-5">
+      <div class="flex items-start justify-between mb-4">
+        <div>
+          <div class="text-lg font-bold">Extraction Result</div>
+          <div class="text-xs text-gray-500">${meta.files_count || 0} file${(meta.files_count || 0) === 1 ? "" : "s"} · ${(meta.total_chars || 0).toLocaleString()} chars · Engine: <b class="text-gray-300">${esc(meta.engine || "heuristic")}</b></div>
+        </div>
+        <div class="flex gap-2">
+          <button id="intake-create-deal" class="btn text-xs">Create new deal</button>
+          <select id="apply-deal" class="input text-sm" style="width:auto"><option value="">Apply to existing deal…</option>${state.deals.map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("")}</select>
+          <button id="apply-btn" class="btn-ghost text-xs">Apply</button>
+        </div>
+      </div>
+
+      ${summary ? `<div class="border border-blue-900 bg-blue-950/30 rounded p-3 mb-5">
+        <div class="text-xs text-blue-400 uppercase mb-1">Summary</div>
+        <div class="text-sm text-gray-200">${esc(summary)}</div>
+      </div>` : ""}
+
+      ${redFlagArr.length ? `<div class="border border-red-900 bg-red-950/20 rounded p-3 mb-5">
+        <div class="text-xs text-red-400 uppercase mb-2">Red flags (${redFlagArr.length})</div>
+        <div class="space-y-1">${redFlagArr.map(([k, v]) => `<div class="text-sm"><b class="text-red-300">${esc(k.replace(/_/g, " "))}:</b> <span class="text-gray-200">${esc(v.value)}</span></div>`).join("")}</div>
+      </div>` : ""}
+
+      ${sections.map(([t, m]) => section(t, m)).join("")}
+
+      <details class="mt-5"><summary class="text-xs text-gray-500 cursor-pointer">Raw text preview</summary>
+        <pre class="text-xs text-gray-400 whitespace-pre-wrap mt-2 max-h-60 overflow-y-auto p-2 bg-[#0b0f17] rounded">${esc((meta.raw_preview || "").slice(0, 5000))}</pre>
+      </details>
+      <details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer">Full JSON</summary>
+        <pre class="text-xs text-gray-400 whitespace-pre-wrap mt-2 max-h-80 overflow-auto p-2 bg-[#0b0f17] rounded">${esc(JSON.stringify(ex, null, 2))}</pre>
+      </details>
+    </div>`;
+
+  // Flatten to patch for apply-to-deal
+  const flatten = () => {
+    const patch = {};
+    const prop = ex.property || {};
+    const fin = ex.financials || {};
+    const put = (k, obj) => { if (obj && obj.value !== null && obj.value !== undefined && obj.value !== "") patch[k] = obj.value; };
+    put("name", prop.name);
+    put("address", prop.address);
+    put("city", prop.city);
+    put("state", prop.state);
+    put("asset_class", prop.asset_class);
+    put("units", prop.units);
+    put("ask_price", fin.ask_price);
+    put("noi", fin.noi);
+    put("cap_rate", fin.cap_rate);
+    return patch;
+  };
+
+  $("apply-btn").onclick = async () => {
+    const did = $("apply-deal").value;
+    if (!did) { toast("Pick a deal to apply to, or click Create new deal", "warn"); return; }
+    const patch = flatten();
+    if (!Object.keys(patch).length) { toast("No fields extracted to apply", "warn"); return; }
+    try { await apiJson("PUT", `/api/v2/deals/${encodeURIComponent(did)}`, patch); toast("Deal updated"); await refreshDashboard(); }
+    catch (e) { toast(`Update failed: ${e.message}`, "err"); }
+  };
+  $("intake-create-deal").onclick = async () => {
+    const patch = flatten();
+    patch.name = patch.name || `Intake ${new Date().toLocaleDateString()}`;
+    patch.status = "incoming leads";
+    try { const r = await apiJson("POST", "/api/v2/deals", patch); toast("Deal created"); await refreshDashboard(); }
+    catch (e) { toast(`Create failed: ${e.message}`, "err"); }
+  };
+}
+
+/* ---------- GRAPH (D3 force) ---------- */
+
+let __graphSim = null;
+function initGraph(resetOnly) {
+  const g = state.graph;
+  const svgEl = document.getElementById("graph-svg");
+  if (!svgEl || !g || !g.nodes) return;
+  const svg = d3.select(svgEl);
+  svg.selectAll("*").remove();
+  const width = 900, height = 620;
+
+  const zoomG = svg.append("g");
+  svg.call(d3.zoom().scaleExtent([0.3, 4]).on("zoom", (e) => zoomG.attr("transform", e.transform)));
+
+  const nodes = g.nodes.map(n => ({ ...n }));
+  const links = g.links.map(l => ({ ...l }));
+
+  const sim = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id(d => d.id).distance(d => d.type === "market-edge" ? 120 : 70).strength(0.4))
+    .force("charge", d3.forceManyBody().strength(-140))
+    .force("center", d3.forceCenter(width / 2, height / 2))
+    .force("collide", d3.forceCollide(d => (d.type === "market" ? 28 : d.type === "broker" ? 14 : 10)));
+  __graphSim = sim;
+
+  const link = zoomG.append("g").selectAll("line").data(links).enter().append("line")
+    .attr("class", "edge")
+    .attr("stroke-width", d => Math.min(4, Math.max(1, (d.value || 1))));
+
+  const node = zoomG.append("g").selectAll("g").data(nodes).enter().append("g")
+    .attr("class", d => `node node-${d.type}`)
+    .call(d3.drag()
+      .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on("end", (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+  node.append("circle")
+    .attr("r", d => d.type === "market" ? 22 : d.type === "broker" ? Math.min(18, 6 + (d.value || 1) * 2) : 7)
+    .attr("class", d => `node-${d.type}`)
+    .attr("stroke", "#0b0f17")
+    .attr("stroke-width", 1.5);
+
+  node.append("text")
+    .attr("dy", d => d.type === "market" ? 4 : -14)
+    .attr("text-anchor", "middle")
+    .attr("font-size", d => d.type === "market" ? 11 : 9)
+    .attr("fill", d => d.type === "market" ? "#fff" : d.type === "broker" ? "#fbbf24" : "#93c5fd")
+    .text(d => (d.label || "").slice(0, 18));
+
+  node.on("mouseover", (e, d) => {
+    const box = document.getElementById("g-hover");
+    if (!box) return;
+    box.innerHTML = `<div class="font-semibold text-gray-200">${esc(d.label || "")}</div>
+      <div class="text-gray-500 mt-1">${esc(d.type)}${d.sublabel ? " · " + esc(d.sublabel) : ""}</div>
+      ${d.value ? `<div class="mt-1">Connections: <b>${d.value}</b></div>` : ""}`;
+  }).on("click", (e, d) => {
+    if (d.type === "broker") selectBroker(d.id.replace(/^b:/, ""));
+    else if (d.type === "deal") selectDeal(d.id.replace(/^d:/, ""));
+  });
+
+  sim.on("tick", () => {
+    link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+    node.attr("transform", d => `translate(${d.x},${d.y})`);
+  });
+
+  applyGraphFilters();
+}
+
+function applyGraphFilters() {
+  const showB = $("g-show-broker")?.checked ?? true;
+  const showD = $("g-show-deal")?.checked ?? true;
+  const showM = $("g-show-market")?.checked ?? true;
+  d3.selectAll("#graph-svg .node").style("display", function(d) {
+    return ((d.type === "broker" && showB) || (d.type === "deal" && showD) || (d.type === "market" && showM)) ? null : "none";
+  });
+}
+
+/* ---------- MAP (Leaflet) ---------- */
+
+let __map = null, __markerLayer = null, __cluster = null, __heatCircles = null;
+async function initMap() {
+  const el = document.getElementById("deal-map");
+  if (!el || typeof L === "undefined") return;
+  if (__map) { try { __map.remove(); } catch {} __map = null; }
+  __map = L.map(el, { center: [39.5, -98.35], zoom: 4, worldCopyJump: true });
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png", {
+    attribution: "© OpenStreetMap © CARTO", maxZoom: 19
+  }).addTo(__map);
+  __markerLayer = L.layerGroup().addTo(__map);
+  if (typeof L.markerClusterGroup === "function") __cluster = L.markerClusterGroup();
+  await renderMapMarkers();
+}
+
+async function renderMapMarkers() {
+  if (!__map) return;
+  __markerLayer.clearLayers();
+  if (__cluster) __cluster.clearLayers();
+  const assetFilter = $("m-filter-asset")?.value || "";
+  const msaAgg = {};
+
+  const ccolor = { "MF": "#2563eb", "Hotel": "#eab308", "MHP": "#16a34a", "RV": "#16a34a", "Self-Storage": "#a855f7", "Industrial": "#64748b", "Office": "#0ea5e9", "Retail": "#f97316", "Other": "#6b7280" };
+
+  const deals = state.deals.filter(d => !assetFilter || d.asset_class === assetFilter);
+  let plotted = 0;
+
+  // Plot deals with existing lat/lng
+  for (const d of deals) {
+    let lat = Number(d.lat), lng = Number(d.lng);
+    if ((isNaN(lat) || isNaN(lng)) && d.city && d.state) {
+      continue; // will require explicit Geocode missing
+    }
+    if (isNaN(lat) || isNaN(lng)) continue;
+    const color = ccolor[d.asset_class] || "#6b7280";
+    const m = L.circleMarker([lat, lng], { radius: 8, fillColor: color, color: "#0b0f17", weight: 1.5, fillOpacity: 0.9 });
+    m.bindPopup(`<div style="min-width:200px">
+      <div style="font-weight:700">${esc(d.name || "")}</div>
+      <div style="font-size:11px;color:#9ca3af">${esc(d.asset_class || "—")} · ${esc([d.city, d.state].filter(Boolean).join(", "))}</div>
+      <div style="font-size:12px;margin-top:4px">Ask: <b>${fmtMoney(d.ask_price)}</b></div>
+      <div style="font-size:12px">NOI: <b>${fmtMoney(d.noi)}</b> · Cap: <b>${esc(d.cap_rate || "—")}</b></div>
+      <div style="font-size:11px;color:#6b7280;margin-top:4px">Stage: ${esc(d.status || "—")}</div>
+    </div>`);
+    m.on("click", () => selectDeal(d.id));
+    if ($("m-layer-cluster")?.checked && __cluster) __cluster.addLayer(m);
+    else __markerLayer.addLayer(m);
+    plotted++;
+    const msa = (d.msa || `${d.city || ""}, ${d.state || ""}`).trim();
+    if (msa.length > 2) msaAgg[msa] = (msaAgg[msa] || 0) + 1;
+  }
+
+  if ($("m-layer-cluster")?.checked && __cluster && !__map.hasLayer(__cluster)) __map.addLayer(__cluster);
+  if (!$("m-layer-cluster")?.checked && __cluster && __map.hasLayer(__cluster)) __map.removeLayer(__cluster);
+  if (!$("m-layer-pins")?.checked) __markerLayer.clearLayers();
+
+  const msaEl = $("m-msa");
+  if (msaEl) {
+    const top = Object.entries(msaAgg).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    msaEl.innerHTML = top.length
+      ? top.map(([m, n]) => `<div class="flex justify-between py-0.5"><span>${esc(m)}</span><span class="text-gray-400">${n}</span></div>`).join("")
+      : `${plotted === 0 ? "No geocoded deals. Click \"Geocode missing\" →" : "No MSA data yet."}`;
+  }
+}
+
+function updateMapLayers() { renderMapMarkers(); }
+
+function focusStateOnMap(st) {
+  if (!__map) return;
+  // Rough state centroids
+  const centroids = { AL:[32.8,-86.8],AK:[64.2,-149.5],AZ:[34.2,-111.7],AR:[34.9,-92.4],CA:[36.8,-119.4],CO:[39,-105.5],CT:[41.6,-72.7],DE:[39,-75.5],FL:[27.8,-81.7],GA:[32.7,-83.5],HI:[20.8,-156.3],ID:[44.2,-114.7],IL:[40,-89.2],IN:[39.9,-86.3],IA:[42.1,-93.5],KS:[38.5,-98.4],KY:[37.5,-85.3],LA:[30.9,-92],ME:[45.4,-68.9],MD:[39,-76.8],MA:[42.3,-71.8],MI:[44.3,-85.4],MN:[46.3,-94.3],MS:[32.8,-89.7],MO:[38.5,-92.3],MT:[47.1,-109.6],NE:[41.5,-99.8],NV:[39.3,-117],NH:[43.7,-71.6],NJ:[40.2,-74.6],NM:[34.4,-106.1],NY:[42.9,-75.5],NC:[35.6,-79.4],ND:[47.4,-100.3],OH:[40.3,-82.8],OK:[35.6,-97.4],OR:[44,-120.5],PA:[40.9,-77.8],RI:[41.7,-71.5],SC:[33.8,-80.9],SD:[44.4,-100.2],TN:[35.7,-86.7],TX:[31.1,-99.9],UT:[39.3,-111.6],VT:[44,-72.7],VA:[37.5,-78.7],WA:[47.4,-120.4],WV:[38.6,-80.6],WI:[44.3,-89.6],WY:[43,-107.6] };
+  const c = centroids[st]; if (c) __map.setView(c, 6);
+}
+
+async function geocodeMissing() {
+  const toGeo = state.deals.filter(d => (!d.lat || !d.lng) && d.city && d.state);
+  if (!toGeo.length) { toast("Nothing to geocode", "info"); return; }
+  toast(`Geocoding ${toGeo.length} deals…`);
+  let ok = 0;
+  for (const d of toGeo) {
+    try {
+      const r = await apiJson("POST", "/api/v2/geocode", { q: `${d.city}, ${d.state}` });
+      if (r && r.lat && r.lng) {
+        d.lat = r.lat; d.lng = r.lng;
+        await apiJson("PUT", `/api/v2/deals/${encodeURIComponent(d.id)}`, { lat: r.lat, lng: r.lng }).catch(() => {});
+        ok++;
+      }
+    } catch {}
+    if (ok % 5 === 0) await new Promise(r => setTimeout(r, 1100)); // nominatim rate
+  }
+  toast(`Geocoded ${ok}/${toGeo.length}`);
+  renderMapMarkers();
+}
+
+/* ---------- DOC CHASE bulk ---------- */
+
+async function bulkCadence(group) {
+  toast(`Bulk cadence (${group}) — drafting individually, check Compose drafts.`, "info");
+  // For now, open first deal's D+7 email as a kickoff; future: queue batch drafts.
+  const first = state.deals.find(d => d.broker_id && (d.status || "").toLowerCase().includes("docs"));
+  if (first) openCadenceDraft("D+7", first.id, first.broker_id);
+}
+
+/* ---------- REPORTS / UW exports ---------- */
+
+function exportReport(fmt) {
+  const r = state.reports;
+  const a = state.analytics;
+  if (fmt === "json") {
+    const blob = new Blob([JSON.stringify({ analytics: a, reports: r }, null, 2)], { type: "application/json" });
+    downloadBlob(blob, `brokerflow-reports-${new Date().toISOString().slice(0,10)}.json`);
+    return;
+  }
+  const rows = [["broker","firm","total","active","closed","docs_in_rate","close_rate","score"]];
+  (r?.leaderboard || a?.broker_scorecard || []).forEach(s => rows.push([
+    s.name || "", s.firm || "", s.total ?? s.deal_count ?? 0, s.active ?? "", s.closed ?? "", s.docs_in_rate ?? "", s.close_rate ?? s.conversion_pct ?? "", s.score ?? ""
+  ]));
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  downloadBlob(new Blob([csv], { type: "text/csv" }), `brokerflow-leaderboard-${new Date().toISOString().slice(0,10)}.csv`);
+}
+
+function exportUnderwriting() {
+  const queue = state.deals.filter(d => { const s = (d.status || "").toLowerCase(); return s === "docs complete" || s === "underwriting"; });
+  const rows = [["deal","asset","location","ask","noi","cap_pct","ppu","dscr","irr_pct","exit_val"]];
+  queue.forEach(d => {
+    const ask = Number(d.ask_price) || 0, noi = Number(d.noi) || 0, units = Number(d.units) || 0;
+    const capPct = Number((d.cap_rate || "").toString().replace("%","")) || (ask && noi ? (noi/ask)*100 : 0);
+    const ppu = units && ask ? ask/units : 0;
+    const loan = ask*0.7, r = 0.065/12, n = 360;
+    const monthly = loan && r ? (loan*r)/(1-Math.pow(1+r,-n)) : 0;
+    const dscr = monthly*12 ? noi/(monthly*12) : 0;
+    const noiY5 = noi*Math.pow(1.03,5);
+    const exitCap = (capPct+0.5)/100;
+    const exitVal = exitCap ? noiY5/exitCap : 0;
+    rows.push([d.name||"", d.asset_class||"", [d.city,d.state].filter(Boolean).join(", "), ask, noi, capPct.toFixed(2), ppu.toFixed(0), dscr.toFixed(2), "", exitVal.toFixed(0)]);
+  });
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+  downloadBlob(new Blob([csv], { type: "text/csv" }), `brokerflow-uw-queue-${new Date().toISOString().slice(0,10)}.csv`);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/* ---------- ADMIN: save/test/health/danger ---------- */
+
+async function saveAdminSection(section) {
+  toast(`Saving ${section}…`);
+  const payload = {};
+  if (section === "profile") {
+    payload.display_name = $("adm-name")?.value || "";
+    payload.team = $("adm-team")?.value || "";
+    payload.role_title = $("adm-role")?.value || "";
+  } else if (section === "clickup") {
+    const tok = $("adm-cu-token")?.value || "";
+    if (tok && !tok.includes("•")) payload.clickup_token = tok;
+    payload.clickup_space_id = $("adm-cu-space")?.value || "";
+  } else if (section === "email") {
+    payload.email_from_name = $("adm-em-name")?.value;
+    payload.email_from = $("adm-em-addr")?.value;
+    payload.smtp_host = $("adm-em-host")?.value;
+    payload.smtp_port = Number($("adm-em-port")?.value) || null;
+    payload.smtp_user = $("adm-em-user")?.value;
+    const pw = $("adm-em-pw")?.value;
+    if (pw && !pw.includes("•")) payload.smtp_password = pw;
+  } else if (section === "sms") {
+    const sid = $("adm-tw-sid")?.value;
+    if (sid && !sid.includes("•")) payload.twilio_sid = sid;
+    const tok = $("adm-tw-tok")?.value;
+    if (tok && !tok.includes("•")) payload.twilio_token = tok;
+    payload.twilio_from = $("adm-tw-from")?.value;
+  } else if (section === "ai") {
+    const k = $("adm-anth")?.value;
+    if (k && !k.includes("•")) payload.anthropic_api_key = k;
+    payload.anthropic_model = $("adm-model")?.value;
+  }
+  try {
+    await apiJson("PUT", "/api/v2/user-config", payload);
+    toast(`${section} saved`);
+  } catch (e) { toast(`Save failed: ${e.message}`, "err"); }
+}
+
+async function testAdminIntegration(kind) {
+  const statusEl = kind === "clickup" ? $("adm-cu-status") : kind === "smtp" ? $("adm-em-status") : kind === "sms" ? $("adm-tw-status") : $("adm-ai-status");
+  if (statusEl) statusEl.innerHTML = `<span class="spin"></span>`;
+  try {
+    const r = await apiJson("POST", `/api/v2/admin/test`, { kind });
+    if (statusEl) statusEl.innerHTML = r.ok ? `<span class="pill pill-ok">ok</span>` : `<span class="pill pill-bad">${esc(r.error || "fail")}</span>`;
+  } catch (e) {
+    if (statusEl) statusEl.innerHTML = `<span class="pill pill-bad">${esc(e.message)}</span>`;
+  }
+}
+
+async function loadEnvHealth() {
+  try {
+    const r = await apiGet("/api/v2/admin/health");
+    state.env_health = r || {};
+    if (state.view === "admin") renderActiveView();
+  } catch {}
+}
+
+async function runAdminDanger(action) {
+  if (!confirm(`Are you sure? This will: ${action}`)) return;
+  try {
+    await apiJson("POST", "/api/v2/admin/danger", { action });
+    toast(`${action} complete`);
+    await refreshDashboard();
+  } catch (e) { toast(`Failed: ${e.message}`, "err"); }
+}
+
+async function inviteTeammate() {
+  const email = $("adm-invite-email")?.value.trim();
+  const role = $("adm-invite-role")?.value;
+  if (!email) { toast("Enter an email", "warn"); return; }
+  try { await apiJson("POST", "/api/v2/admin/invite", { email, role }); toast(`Invited ${email}`); }
+  catch (e) { toast(`Invite failed: ${e.message}`, "err"); }
 }
 
 /* ---------- ADMIN: load space lists ---------- */
