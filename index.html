@@ -13,8 +13,27 @@
 <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script type="module">
-  import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-  window.__createSupabaseClient = createClient;
+  // Primary: esm.sh. Fallback: jsdelivr. If BOTH fail the boot IIFE will
+  // surface a visible error instead of leaving the spinner stuck forever.
+  async function __loadSupabase() {
+    const urls = [
+      "https://esm.sh/@supabase/supabase-js@2.45.4",
+      "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm",
+    ];
+    let lastErr = null;
+    for (const url of urls) {
+      try {
+        const mod = await import(url);
+        if (mod && mod.createClient) {
+          window.__createSupabaseClient = mod.createClient;
+          window.__supabaseLoadError = null;
+          return;
+        }
+      } catch (e) { lastErr = e; }
+    }
+    window.__supabaseLoadError = lastErr || new Error("Supabase client failed to load from all CDNs");
+  }
+  window.__supabaseReady = __loadSupabase();
 </script>
 <style>
   .drop-zone { border: 2px dashed #1f2937; border-radius: 12px; padding: 32px; text-align: center; transition: all .15s; cursor: pointer; }
@@ -84,6 +103,19 @@
   <div class="text-gray-500 text-sm mb-6">Broker deal tracking + follow-up automation</div>
   <div class="spin mx-auto"></div>
   <div class="text-xs text-gray-600 mt-3">Loading…</div>
+</section>
+
+<!-- =================== BOOT FAILURE =================== -->
+<section id="view-boot-error" class="hidden max-w-xl mx-auto px-6 pt-24">
+  <div class="card p-6">
+    <div class="text-xl font-bold mb-2">Couldn't start BrokerFlow</div>
+    <div class="text-xs text-gray-500 mb-3">The app failed to load. Usually this is a transient network hiccup or a stale browser cache. Try the buttons below.</div>
+    <pre id="boot-error-detail" class="bg-black p-3 rounded text-xs text-red-300 overflow-auto mb-4"></pre>
+    <div class="flex gap-2">
+      <button id="btn-boot-retry" class="btn text-xs">Retry</button>
+      <button id="btn-boot-hard-reset" class="btn-ghost text-xs">Hard reset (clear cache)</button>
+    </div>
+  </div>
 </section>
 
 <!-- =================== NOT CONFIGURED =================== -->
@@ -494,44 +526,131 @@ async function apiJson(method, path, body) {
 }
 
 /* ---------- boot ---------- */
+// Surface any otherwise-unhandled error (stuck spinner = bad UX). Shown as
+// a visible recovery card with Retry + Hard Reset buttons.
+function __showBootError(err) {
+  try {
+    hide("view-boot"); hide("view-auth"); hide("view-dashboard"); hide("view-wizard"); hide("view-not-configured"); hide("topbar");
+    const det = document.getElementById("boot-error-detail");
+    if (det) det.textContent = (err && (err.stack || err.message)) || String(err || "Unknown error");
+    show("view-boot-error");
+  } catch (_) {
+    // Last-resort: if even the error view is broken, at least kill the spinner.
+    const b = document.getElementById("view-boot"); if (b) b.classList.add("hidden");
+    alert("BrokerFlow failed to start: " + (err && err.message ? err.message : err));
+  }
+}
+window.addEventListener("error", (e) => {
+  if (document.getElementById("view-boot") && !document.getElementById("view-boot").classList.contains("hidden")) {
+    __showBootError(e.error || new Error(e.message || "Script error"));
+  }
+});
+window.addEventListener("unhandledrejection", (e) => {
+  if (document.getElementById("view-boot") && !document.getElementById("view-boot").classList.contains("hidden")) {
+    __showBootError(e.reason || new Error("Unhandled promise rejection"));
+  }
+});
+
+// Retry & hard-reset wiring
+(function wireBootErrorButtons() {
+  const retry = document.getElementById("btn-boot-retry");
+  const hard  = document.getElementById("btn-boot-hard-reset");
+  if (retry) retry.onclick = () => window.location.reload();
+  if (hard)  hard.onclick  = () => {
+    try { localStorage.clear(); } catch (_) {}
+    try { sessionStorage.clear(); } catch (_) {}
+    // Also clear Supabase-specific storage keys just in case
+    try {
+      Object.keys(localStorage).filter(k => k.startsWith("sb-") || k.includes("supabase")).forEach(k => localStorage.removeItem(k));
+    } catch (_) {}
+    window.location.reload();
+  };
+})();
+
 (async function boot() {
-  // Capture invite token from URL before anything else (survives login redirect).
   try {
-    const u = new URL(window.location.href);
-    const tok = u.searchParams.get("invite");
-    if (tok) state.pendingInviteToken = tok;
-  } catch (_) {}
+    // Capture invite token from URL before anything else (survives login redirect).
+    try {
+      const u = new URL(window.location.href);
+      const tok = u.searchParams.get("invite");
+      if (tok) state.pendingInviteToken = tok;
+    } catch (_) {}
 
-  let pub;
-  try {
-    pub = await (await fetch("/api/v2/public/meta")).json();
-  } catch (e) {
-    show("view-not-configured"); hide("view-boot"); return;
-  }
-  if (!pub.supabase_configured) {
-    show("view-not-configured"); hide("view-boot"); return;
-  }
-  state.supabase = window.__createSupabaseClient(pub.supabase_url, pub.supabase_anon_key);
-  const { data: { session } } = await state.supabase.auth.getSession();
-  state.session = session;
-  state.supabase.auth.onAuthStateChange((_evt, s) => {
-    state.session = s;
-    if (!s) { hide("view-dashboard"); hide("view-wizard"); hide("topbar"); show("view-auth"); }
-  });
+    // Wait for the Supabase ES module to resolve (primary or fallback CDN).
+    // Without this, window.__createSupabaseClient can be undefined on slow
+    // networks and boot dies with an unhandled TypeError → stuck spinner.
+    if (window.__supabaseReady) {
+      try { await window.__supabaseReady; } catch (_) {}
+    }
+    if (window.__supabaseLoadError || typeof window.__createSupabaseClient !== "function") {
+      throw new Error(
+        "Supabase client failed to load from CDN. " +
+        "Check your network / ad-blocker. " +
+        (window.__supabaseLoadError ? `Detail: ${window.__supabaseLoadError.message}` : "")
+      );
+    }
 
-  if (!state.session) { show("view-auth"); hide("view-boot"); return; }
-  await routeAfterLogin();
+    let pub;
+    try {
+      pub = await (await fetch("/api/v2/public/meta")).json();
+    } catch (e) {
+      show("view-not-configured"); hide("view-boot"); return;
+    }
+    if (!pub.supabase_configured) {
+      show("view-not-configured"); hide("view-boot"); return;
+    }
+    state.supabase = window.__createSupabaseClient(pub.supabase_url, pub.supabase_anon_key);
+
+    // getSession can occasionally reject on corrupt localStorage (e.g. old
+    // session blob from a prior supabase-js version). Treat reject as "no
+    // session" and route to auth so the user can sign in fresh.
+    let session = null;
+    try {
+      const r = await state.supabase.auth.getSession();
+      session = (r && r.data && r.data.session) || null;
+    } catch (authErr) {
+      try {
+        Object.keys(localStorage).filter(k => k.startsWith("sb-") || k.includes("supabase")).forEach(k => localStorage.removeItem(k));
+      } catch (_) {}
+      session = null;
+    }
+    state.session = session;
+    state.supabase.auth.onAuthStateChange((_evt, s) => {
+      state.session = s;
+      if (!s) { hide("view-dashboard"); hide("view-wizard"); hide("topbar"); show("view-auth"); }
+    });
+
+    if (!state.session) { show("view-auth"); hide("view-boot"); return; }
+    await routeAfterLogin();
+  } catch (err) {
+    __showBootError(err);
+  }
 })();
 
 async function routeAfterLogin() {
-  hide("view-boot"); hide("view-auth");
+  hide("view-boot"); hide("view-auth"); hide("view-boot-error");
   show("topbar");
   $("user-email").textContent = state.session.user.email || "(guest)";
   try {
     state.meta = await apiGet("/api/v2/meta");
   } catch (e) {
-    toast("Failed to load account metadata: " + e.message, "err");
-    return;
+    // If meta is a 401 the JWT is stale — try a refresh once before giving
+    // up; otherwise signal boot-error so the user has a Retry button rather
+    // than a silent blank page.
+    let recovered = false;
+    if (/^401/.test(String(e.message)) && state.supabase) {
+      try {
+        const { data } = await state.supabase.auth.refreshSession();
+        if (data && data.session) {
+          state.session = data.session;
+          try { state.meta = await apiGet("/api/v2/meta"); recovered = true; } catch (_) {}
+        }
+      } catch (_) {}
+    }
+    if (!recovered) {
+      __showBootError(new Error("Couldn't load your account: " + e.message));
+      return;
+    }
   }
   if (!state.meta.wizard_completed) {
     show("view-wizard");
@@ -560,9 +679,16 @@ async function routeAfterLogin() {
       renderWorkspaceContext();
       renderActiveView();
     }
-    // Fire both roundtrips in parallel — workspace context + pipeline are
-    // independent, so awaiting sequentially doubled perceived load time.
-    await Promise.all([ loadTeams(), refreshDashboard() ]);
+    // Sequence intentionally: loadTeams resolves (and may correct) the
+    // active workspace id, then refreshDashboard stamps the right
+    // X-Workspace-Id header on the pipeline fetch. Running them in
+    // parallel risked firing deals/brokers against a stale workspace id
+    // that the user was no longer a member of, which 403'd every call.
+    // loadTeams is fast (one roundtrip, no ClickUp), refreshDashboard
+    // paints from cache instantly anyway, so the extra serialization is
+    // effectively invisible.
+    try { await loadTeams(); } catch (_) { /* soft-fail — sidebar shows empty */ }
+    try { await refreshDashboard(); } catch (_) { /* refreshDashboard shows its own error card */ }
   }
   // After any post-login routing finishes, surface pending invite (if any).
   if (state.pendingInviteToken) {
