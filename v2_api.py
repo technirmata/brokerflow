@@ -3211,3 +3211,704 @@ async def v2_invite_accept(
     )
     team = await _get_team_or_404(inv["team_id"])
     return {"ok": True, "team": team}
+
+
+# =================================================================
+# WORKSPACES — alias layer. The existing `teams` table and its four
+# endpoints (`/teams/*`) act as the top-level WORKSPACE. These aliases
+# let the frontend speak in workspace language while reusing the same
+# storage, RLS, and permission helpers.
+# =================================================================
+
+@router.get("/workspaces")
+async def v2_workspaces_list(user: UserContext = Depends(get_current_user)):
+    return await v2_teams_list(user=user)
+
+
+@router.post("/workspaces")
+async def v2_workspaces_create(
+    payload: dict, user: UserContext = Depends(get_current_user)
+):
+    return await v2_teams_create(payload=payload, user=user)
+
+
+@router.get("/workspaces/{workspace_id}")
+async def v2_workspaces_get(
+    workspace_id: str, user: UserContext = Depends(get_current_user)
+):
+    return await v2_teams_get(team_id=workspace_id, user=user)
+
+
+@router.patch("/workspaces/{workspace_id}")
+async def v2_workspaces_update(
+    workspace_id: str, payload: dict, user: UserContext = Depends(get_current_user)
+):
+    return await v2_teams_update(team_id=workspace_id, payload=payload, user=user)
+
+
+@router.delete("/workspaces/{workspace_id}")
+async def v2_workspaces_delete(
+    workspace_id: str, user: UserContext = Depends(get_current_user)
+):
+    return await v2_teams_delete(team_id=workspace_id, user=user)
+
+
+@router.get("/workspaces/{workspace_id}/members")
+async def v2_workspace_members_list(
+    workspace_id: str, user: UserContext = Depends(get_current_user)
+):
+    return await v2_members_list(team_id=workspace_id, user=user)
+
+
+@router.patch("/workspaces/{workspace_id}/members/{member_id}")
+async def v2_workspace_members_update(
+    workspace_id: str,
+    member_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    return await v2_members_update(
+        team_id=workspace_id, member_id=member_id, payload=payload, user=user
+    )
+
+
+@router.delete("/workspaces/{workspace_id}/members/{member_id}")
+async def v2_workspace_members_delete(
+    workspace_id: str,
+    member_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    return await v2_members_delete(
+        team_id=workspace_id, member_id=member_id, user=user
+    )
+
+
+@router.get("/workspaces/{workspace_id}/roles")
+async def v2_workspace_roles_list(
+    workspace_id: str, user: UserContext = Depends(get_current_user)
+):
+    return await v2_roles_list(team_id=workspace_id, user=user)
+
+
+@router.post("/workspaces/{workspace_id}/roles")
+async def v2_workspace_roles_create(
+    workspace_id: str, payload: dict, user: UserContext = Depends(get_current_user)
+):
+    return await v2_roles_create(team_id=workspace_id, payload=payload, user=user)
+
+
+@router.patch("/workspaces/{workspace_id}/roles/{role_id}")
+async def v2_workspace_roles_update(
+    workspace_id: str,
+    role_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    return await v2_roles_update(
+        team_id=workspace_id, role_id=role_id, payload=payload, user=user
+    )
+
+
+@router.delete("/workspaces/{workspace_id}/roles/{role_id}")
+async def v2_workspace_roles_delete(
+    workspace_id: str,
+    role_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    return await v2_roles_delete(team_id=workspace_id, role_id=role_id, user=user)
+
+
+@router.get("/workspaces/{workspace_id}/invitations")
+async def v2_workspace_invites_list(
+    workspace_id: str, user: UserContext = Depends(get_current_user)
+):
+    return await v2_invites_list(team_id=workspace_id, user=user)
+
+
+@router.post("/workspaces/{workspace_id}/invitations")
+async def v2_workspace_invites_create(
+    workspace_id: str, payload: dict, user: UserContext = Depends(get_current_user)
+):
+    return await v2_invites_create(team_id=workspace_id, payload=payload, user=user)
+
+
+@router.delete("/workspaces/{workspace_id}/invitations/{invite_id}")
+async def v2_workspace_invites_revoke(
+    workspace_id: str,
+    invite_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    return await v2_invites_revoke(team_id=workspace_id, invite_id=invite_id, user=user)
+
+
+# =================================================================
+# SUB-TEAMS inside a workspace — groupings like "Acquisitions",
+# "Asset Mgmt", "Dispositions". Each has its own members and roles.
+# A user must already be a workspace member to be added to a sub-team.
+# Workspace admins/owners have full rights on every sub-team in their
+# workspace; otherwise sub-team permissions are enforced by role.
+# =================================================================
+
+DEFAULT_SUBTEAM_ROLES = [
+    {
+        "name": "Team Admin",
+        "is_system": True,
+        "is_default": False,
+        "permissions": {
+            "team_admin": True,
+            "manage_team_members": True,
+            "manage_team_roles": True,
+            "edit_team_content": True,
+            "view_team_content": True,
+        },
+    },
+    {
+        "name": "Member",
+        "is_system": True,
+        "is_default": True,
+        "permissions": {
+            "team_admin": False,
+            "manage_team_members": False,
+            "manage_team_roles": False,
+            "edit_team_content": True,
+            "view_team_content": True,
+        },
+    },
+    {
+        "name": "Viewer",
+        "is_system": True,
+        "is_default": False,
+        "permissions": {
+            "team_admin": False,
+            "manage_team_members": False,
+            "manage_team_roles": False,
+            "edit_team_content": False,
+            "view_team_content": True,
+        },
+    },
+]
+
+
+async def _get_subteam_or_404(team_id: str) -> dict:
+    rows = await _svc_select(
+        "workspace_teams", {"id": f"eq.{team_id}", "select": "*", "limit": "1"}
+    )
+    if not rows:
+        raise HTTPException(404, "Team not found")
+    return rows[0]
+
+
+async def _get_subteam_membership(team_id: str, user_id: str) -> dict | None:
+    rows = await _svc_select(
+        "workspace_team_members",
+        {
+            "team_id": f"eq.{team_id}",
+            "user_id": f"eq.{user_id}",
+            "select": "*,workspace_team_roles(*)",
+            "limit": "1",
+        },
+    )
+    return rows[0] if rows else None
+
+
+async def _ensure_default_subteam_roles(team_id: str) -> list[dict]:
+    existing = await _svc_select(
+        "workspace_team_roles", {"team_id": f"eq.{team_id}", "select": "*"}
+    )
+    existing_names = {r["name"] for r in existing}
+    to_insert = [
+        {
+            "team_id": team_id,
+            "name": r["name"],
+            "permissions": r["permissions"],
+            "is_default": r["is_default"],
+            "is_system": r["is_system"],
+        }
+        for r in DEFAULT_SUBTEAM_ROLES
+        if r["name"] not in existing_names
+    ]
+    if to_insert:
+        inserted = await _svc_insert("workspace_team_roles", to_insert)
+        existing = existing + inserted
+    return existing
+
+
+async def _require_workspace_member_for_subteam(
+    workspace_id: str, user: UserContext
+) -> tuple[dict, dict]:
+    """Verify user is a member (or owner) of the workspace. Returns
+    (workspace, membership)."""
+    return await _require_member(workspace_id, user)
+
+
+async def _require_subteam_access(
+    workspace_id: str, team_id: str, user: UserContext, perm: str | None = None
+) -> tuple[dict, dict, dict, dict | None]:
+    """Returns (workspace, workspace_membership, subteam, subteam_membership).
+    Workspace owner and admins bypass subteam-level perm checks. Otherwise
+    the user must be a subteam member with the requested permission.
+    """
+    workspace, ws_membership = await _require_workspace_member_for_subteam(
+        workspace_id, user
+    )
+    subteam = await _get_subteam_or_404(team_id)
+    if subteam["workspace_id"] != workspace_id:
+        raise HTTPException(404, "Team not found in this workspace")
+
+    # Workspace owner / admin has full rights on every sub-team.
+    if workspace["owner_id"] == user.user_id or _has_perm(
+        workspace, ws_membership, user, "admin"
+    ):
+        sub_m = await _get_subteam_membership(team_id, user.user_id)
+        return workspace, ws_membership, subteam, sub_m
+
+    sub_m = await _get_subteam_membership(team_id, user.user_id)
+    if not sub_m:
+        raise HTTPException(403, "Not a member of this team")
+
+    if perm:
+        role = (sub_m or {}).get("workspace_team_roles") or {}
+        perms = role.get("permissions") or {}
+        if not (perms.get("team_admin") or perms.get(perm)):
+            raise HTTPException(403, f"Missing team permission: {perm}")
+
+    return workspace, ws_membership, subteam, sub_m
+
+
+# ---------- Sub-team CRUD ----------
+
+@router.get("/workspaces/{workspace_id}/teams")
+async def v2_subteams_list(
+    workspace_id: str, user: UserContext = Depends(get_current_user)
+):
+    """List all sub-teams in the workspace the user can see.
+    Workspace members see every sub-team; the per-team membership
+    is surfaced so the UI can show "Joined" badges.
+    """
+    _require_service_role()
+    await _require_workspace_member_for_subteam(workspace_id, user)
+    subteams = await _svc_select(
+        "workspace_teams",
+        {
+            "workspace_id": f"eq.{workspace_id}",
+            "select": "*",
+            "order": "created_at.desc",
+        },
+    )
+    # Fetch the caller's membership rows in bulk so we can annotate.
+    my_mems = await _svc_select(
+        "workspace_team_members",
+        {
+            "user_id": f"eq.{user.user_id}",
+            "select": "team_id,role_id,workspace_team_roles(name,permissions)",
+        },
+    )
+    my_by_team = {m["team_id"]: m for m in my_mems}
+    # Count members per team.
+    counts = await _svc_select(
+        "workspace_team_members",
+        {
+            "team_id": f"in.({','.join([s['id'] for s in subteams]) or 'none'})",
+            "select": "team_id",
+        },
+    )
+    count_map: dict[str, int] = {}
+    for c in counts:
+        count_map[c["team_id"]] = count_map.get(c["team_id"], 0) + 1
+    for s in subteams:
+        mem = my_by_team.get(s["id"])
+        s["member_count"] = count_map.get(s["id"], 0)
+        s["joined"] = bool(mem)
+        s["my_role"] = (
+            (mem.get("workspace_team_roles") or {}).get("name") if mem else None
+        )
+        s["my_permissions"] = (
+            (mem.get("workspace_team_roles") or {}).get("permissions") if mem else {}
+        )
+    return {"teams": subteams}
+
+
+@router.post("/workspaces/{workspace_id}/teams")
+async def v2_subteams_create(
+    workspace_id: str, payload: dict, user: UserContext = Depends(get_current_user)
+):
+    """Create a sub-team. Requires workspace manage_members or admin.
+    Creator becomes the first Team Admin.
+    """
+    _require_service_role()
+    await _require_perm(workspace_id, user, "manage_members")
+    name = (payload or {}).get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    description = (payload or {}).get("description", "")
+    rows = await _svc_insert(
+        "workspace_teams",
+        {
+            "workspace_id": workspace_id,
+            "name": name,
+            "description": description,
+            "created_by": user.user_id,
+        },
+    )
+    subteam = rows[0]
+    roles = await _ensure_default_subteam_roles(subteam["id"])
+    admin_role = next(
+        (r for r in roles if r["name"] == "Team Admin"), roles[0]
+    )
+    await _svc_insert(
+        "workspace_team_members",
+        {
+            "team_id": subteam["id"],
+            "user_id": user.user_id,
+            "role_id": admin_role["id"],
+            "added_by": user.user_id,
+        },
+    )
+    subteam["member_count"] = 1
+    subteam["joined"] = True
+    subteam["my_role"] = "Team Admin"
+    subteam["my_permissions"] = admin_role["permissions"]
+    return {"team": subteam}
+
+
+@router.get("/workspaces/{workspace_id}/teams/{team_id}")
+async def v2_subteams_get(
+    workspace_id: str,
+    team_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    _, _, subteam, sub_m = await _require_subteam_access(
+        workspace_id, team_id, user
+    )
+    role = (sub_m or {}).get("workspace_team_roles") or {}
+    subteam["joined"] = bool(sub_m)
+    subteam["my_role"] = role.get("name")
+    subteam["my_permissions"] = role.get("permissions") or {}
+    return {"team": subteam}
+
+
+@router.patch("/workspaces/{workspace_id}/teams/{team_id}")
+async def v2_subteams_update(
+    workspace_id: str,
+    team_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_subteam_access(workspace_id, team_id, user, perm="team_admin")
+    updates: dict[str, Any] = {}
+    if "name" in payload and str(payload["name"]).strip():
+        updates["name"] = str(payload["name"]).strip()
+    if "description" in payload:
+        updates["description"] = str(payload["description"] or "")
+    if not updates:
+        raise HTTPException(400, "Nothing to update")
+    rows = await _svc_update(
+        "workspace_teams",
+        {"id": f"eq.{team_id}", "workspace_id": f"eq.{workspace_id}"},
+        updates,
+    )
+    return {"team": rows[0] if rows else None}
+
+
+@router.delete("/workspaces/{workspace_id}/teams/{team_id}")
+async def v2_subteams_delete(
+    workspace_id: str,
+    team_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    # Only workspace admins / owner can fully delete a sub-team.
+    await _require_perm(workspace_id, user, "admin")
+    await _get_subteam_or_404(team_id)
+    await _svc_delete(
+        "workspace_teams",
+        {"id": f"eq.{team_id}", "workspace_id": f"eq.{workspace_id}"},
+    )
+    return {"ok": True}
+
+
+# ---------- Sub-team roles ----------
+
+@router.get("/workspaces/{workspace_id}/teams/{team_id}/roles")
+async def v2_subteam_roles_list(
+    workspace_id: str,
+    team_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_subteam_access(workspace_id, team_id, user)
+    roles = await _ensure_default_subteam_roles(team_id)
+    roles.sort(key=lambda r: (not r.get("is_system"), r.get("name", "")))
+    return {"roles": roles}
+
+
+@router.post("/workspaces/{workspace_id}/teams/{team_id}/roles")
+async def v2_subteam_roles_create(
+    workspace_id: str,
+    team_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_subteam_access(
+        workspace_id, team_id, user, perm="manage_team_roles"
+    )
+    name = (payload or {}).get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "Role name required")
+    perms = (payload or {}).get("permissions") or {}
+    if not isinstance(perms, dict):
+        raise HTTPException(400, "permissions must be an object")
+    rows = await _svc_insert(
+        "workspace_team_roles",
+        {
+            "team_id": team_id,
+            "name": name,
+            "permissions": perms,
+            "is_default": False,
+            "is_system": False,
+        },
+    )
+    return {"role": rows[0] if rows else None}
+
+
+@router.patch("/workspaces/{workspace_id}/teams/{team_id}/roles/{role_id}")
+async def v2_subteam_roles_update(
+    workspace_id: str,
+    team_id: str,
+    role_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_subteam_access(
+        workspace_id, team_id, user, perm="manage_team_roles"
+    )
+    existing = await _svc_select(
+        "workspace_team_roles",
+        {
+            "id": f"eq.{role_id}",
+            "team_id": f"eq.{team_id}",
+            "select": "*",
+            "limit": "1",
+        },
+    )
+    if not existing:
+        raise HTTPException(404, "Role not found in this team")
+    role = existing[0]
+    updates: dict[str, Any] = {}
+    if "name" in payload and str(payload["name"]).strip():
+        if role.get("is_system"):
+            raise HTTPException(400, "System role names cannot be renamed")
+        updates["name"] = str(payload["name"]).strip()
+    if "permissions" in payload and isinstance(payload["permissions"], dict):
+        updates["permissions"] = payload["permissions"]
+    if "is_default" in payload:
+        updates["is_default"] = bool(payload["is_default"])
+    if not updates:
+        raise HTTPException(400, "Nothing to update")
+    rows = await _svc_update(
+        "workspace_team_roles",
+        {"id": f"eq.{role_id}", "team_id": f"eq.{team_id}"},
+        updates,
+    )
+    return {"role": rows[0] if rows else None}
+
+
+@router.delete("/workspaces/{workspace_id}/teams/{team_id}/roles/{role_id}")
+async def v2_subteam_roles_delete(
+    workspace_id: str,
+    team_id: str,
+    role_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_subteam_access(
+        workspace_id, team_id, user, perm="manage_team_roles"
+    )
+    existing = await _svc_select(
+        "workspace_team_roles",
+        {
+            "id": f"eq.{role_id}",
+            "team_id": f"eq.{team_id}",
+            "select": "*",
+            "limit": "1",
+        },
+    )
+    if not existing:
+        raise HTTPException(404, "Role not found in this team")
+    role = existing[0]
+    if role.get("is_system"):
+        raise HTTPException(400, "System roles cannot be deleted")
+    all_roles = await _svc_select(
+        "workspace_team_roles", {"team_id": f"eq.{team_id}", "select": "*"}
+    )
+    default = next(
+        (r for r in all_roles if r.get("is_default") and r["id"] != role_id),
+        next((r for r in all_roles if r["name"] == "Member"), None),
+    )
+    if default:
+        await _svc_update(
+            "workspace_team_members",
+            {"team_id": f"eq.{team_id}", "role_id": f"eq.{role_id}"},
+            {"role_id": default["id"]},
+        )
+    await _svc_delete(
+        "workspace_team_roles",
+        {"id": f"eq.{role_id}", "team_id": f"eq.{team_id}"},
+    )
+    return {"ok": True}
+
+
+# ---------- Sub-team members ----------
+
+@router.get("/workspaces/{workspace_id}/teams/{team_id}/members")
+async def v2_subteam_members_list(
+    workspace_id: str,
+    team_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_subteam_access(workspace_id, team_id, user)
+    rows = await _svc_select(
+        "workspace_team_members",
+        {
+            "team_id": f"eq.{team_id}",
+            "select": "*,workspace_team_roles(id,name,permissions,is_system)",
+            "order": "added_at.asc",
+        },
+    )
+    return {"members": rows}
+
+
+@router.post("/workspaces/{workspace_id}/teams/{team_id}/members")
+async def v2_subteam_members_add(
+    workspace_id: str,
+    team_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    """Add an existing workspace member to a sub-team."""
+    await _require_subteam_access(
+        workspace_id, team_id, user, perm="manage_team_members"
+    )
+    target_user_id = (payload or {}).get("user_id")
+    role_id = (payload or {}).get("role_id")
+    if not target_user_id:
+        raise HTTPException(400, "user_id required")
+
+    # Target must already belong to the workspace.
+    ws_membership = await _get_membership(workspace_id, target_user_id)
+    workspace = await _get_team_or_404(workspace_id)
+    if not ws_membership and workspace["owner_id"] != target_user_id:
+        raise HTTPException(
+            400,
+            "User is not a member of this workspace. Invite them to the workspace first.",
+        )
+
+    if not role_id:
+        roles = await _ensure_default_subteam_roles(team_id)
+        default = next((r for r in roles if r.get("is_default")), roles[0])
+        role_id = default["id"]
+    else:
+        chk = await _svc_select(
+            "workspace_team_roles",
+            {
+                "id": f"eq.{role_id}",
+                "team_id": f"eq.{team_id}",
+                "select": "id",
+                "limit": "1",
+            },
+        )
+        if not chk:
+            raise HTTPException(400, "role_id does not belong to this team")
+
+    # Upsert — if already a member, update their role.
+    existing = await _get_subteam_membership(team_id, target_user_id)
+    if existing:
+        rows = await _svc_update(
+            "workspace_team_members",
+            {"id": f"eq.{existing['id']}"},
+            {"role_id": role_id},
+        )
+        return {"member": rows[0] if rows else None, "updated": True}
+    rows = await _svc_insert(
+        "workspace_team_members",
+        {
+            "team_id": team_id,
+            "user_id": target_user_id,
+            "role_id": role_id,
+            "added_by": user.user_id,
+        },
+    )
+    return {"member": rows[0] if rows else None, "updated": False}
+
+
+@router.patch("/workspaces/{workspace_id}/teams/{team_id}/members/{member_id}")
+async def v2_subteam_members_update(
+    workspace_id: str,
+    team_id: str,
+    member_id: str,
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    await _require_subteam_access(
+        workspace_id, team_id, user, perm="manage_team_members"
+    )
+    existing = await _svc_select(
+        "workspace_team_members",
+        {
+            "id": f"eq.{member_id}",
+            "team_id": f"eq.{team_id}",
+            "select": "*",
+            "limit": "1",
+        },
+    )
+    if not existing:
+        raise HTTPException(404, "Member not found")
+    role_id = (payload or {}).get("role_id")
+    if not role_id:
+        raise HTTPException(400, "role_id required")
+    chk = await _svc_select(
+        "workspace_team_roles",
+        {
+            "id": f"eq.{role_id}",
+            "team_id": f"eq.{team_id}",
+            "select": "id",
+            "limit": "1",
+        },
+    )
+    if not chk:
+        raise HTTPException(400, "role_id does not belong to this team")
+    rows = await _svc_update(
+        "workspace_team_members",
+        {"id": f"eq.{member_id}", "team_id": f"eq.{team_id}"},
+        {"role_id": role_id},
+    )
+    return {"member": rows[0] if rows else None}
+
+
+@router.delete("/workspaces/{workspace_id}/teams/{team_id}/members/{member_id}")
+async def v2_subteam_members_remove(
+    workspace_id: str,
+    team_id: str,
+    member_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    existing = await _svc_select(
+        "workspace_team_members",
+        {
+            "id": f"eq.{member_id}",
+            "team_id": f"eq.{team_id}",
+            "select": "*",
+            "limit": "1",
+        },
+    )
+    if not existing:
+        raise HTTPException(404, "Member not found")
+    # Self-leave always allowed. Otherwise need manage_team_members.
+    if existing[0]["user_id"] != user.user_id:
+        await _require_subteam_access(
+            workspace_id, team_id, user, perm="manage_team_members"
+        )
+    else:
+        await _require_workspace_member_for_subteam(workspace_id, user)
+    await _svc_delete(
+        "workspace_team_members",
+        {"id": f"eq.{member_id}", "team_id": f"eq.{team_id}"},
+    )
+    return {"ok": True}
