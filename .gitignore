@@ -1,4 +1,5 @@
 .env
+CREDENTIALS.md
 __pycache__/
 *.pyc
 .DS_Store
