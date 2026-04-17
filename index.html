@@ -3387,9 +3387,14 @@ async function deepParseIntake() {
   </div>`;
 
   try {
+    // Manual fetch (multipart can't use apiJson). Still must stamp
+    // X-Workspace-Id so the backend routes to the active workspace's
+    // owner credentials instead of silently falling back to the default.
+    const _hdrs = { Authorization: `Bearer ${state.session.access_token}` };
+    if (state.activeTeamId) _hdrs["X-Workspace-Id"] = state.activeTeamId;
     const res = await fetch("/api/v2/intake/deep-parse", {
       method: "POST",
-      headers: { Authorization: `Bearer ${state.session.access_token}` },
+      headers: _hdrs,
       body: fd,
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
