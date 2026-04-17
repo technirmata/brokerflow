@@ -1,4 +1,4 @@
--- BrokerFlow Supabase Schema
+-- JP BrokerFlow Supabase Schema
 -- Run this in Supabase SQL Editor after creating a new project.
 -- Enables Row Level Security so each user only sees their own data.
 
