@@ -1,5 +1,5 @@
 """
-BrokerFlow backend — single-file FastAPI server.
+JP BrokerFlow backend — single-file FastAPI server.
 
 Run:
     pip install fastapi uvicorn httpx python-multipart pdfplumber python-dotenv
@@ -186,7 +186,7 @@ def task_to_followup(task: dict) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("BrokerFlow backend up on http://localhost:8787")
+    print("JP BrokerFlow backend up on http://localhost:8787")
     if not CLICKUP_TOKEN:
         print("WARNING: CLICKUP_TOKEN not set — ClickUp calls will fail.")
     yield
