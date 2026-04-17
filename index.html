@@ -261,35 +261,41 @@ SUPABASE_JWT_SECRET=your-project-jwt-secret</pre>
   </div>
 </section>
 
-<!-- =================== DASHBOARD =================== -->
-<section id="view-dashboard" class="hidden max-w-7xl mx-auto px-6 py-6">
-  <div class="grid grid-cols-12 gap-6">
+<!-- =================== DASHBOARD (Shell) =================== -->
+<section id="view-dashboard" class="hidden">
+  <div class="max-w-[1400px] mx-auto flex gap-0 min-h-[calc(100vh-60px)]">
 
-    <!-- Deals -->
-    <div class="col-span-12 lg:col-span-5">
+    <!-- Sidebar -->
+    <aside class="w-56 border-r border-gray-800 py-4 px-3 shrink-0">
+      <div class="text-xs uppercase tracking-wider text-gray-500 px-2 mb-2">Role</div>
+      <select id="role-picker" class="input text-sm mb-4">
+        <option value="Director">Director of Acquisitions</option>
+        <option value="VP">VP Acquisitions</option>
+        <option value="Analyst">Acquisitions Analyst</option>
+        <option value="IC">Investment Committee</option>
+      </select>
+      <div class="text-xs uppercase tracking-wider text-gray-500 px-2 mb-2">Navigation</div>
+      <nav id="nav" class="space-y-1">
+        <!-- Populated by JS -->
+      </nav>
+      <div class="mt-6 pt-4 border-t border-gray-800">
+        <button id="btn-refresh" class="btn-ghost text-xs w-full">↻ Refresh data</button>
+      </div>
+    </aside>
+
+    <!-- Main area -->
+    <main id="view-main" class="flex-1 p-6 overflow-x-auto">
+      <!-- View content swapped in by JS -->
+    </main>
+
+    <!-- Detail drawer (slide-in) -->
+    <aside id="detail-drawer" class="hidden w-96 border-l border-gray-800 p-4 overflow-y-auto shrink-0">
       <div class="flex items-center justify-between mb-3">
-        <div class="text-lg font-semibold">Active Deals <span id="deals-count" class="text-gray-500 text-sm"></span></div>
-        <button id="btn-refresh" class="btn-ghost text-xs">↻ Refresh</button>
+        <div class="text-sm font-semibold text-gray-300">Detail</div>
+        <button id="drawer-close" class="btn-ghost text-xs">✕</button>
       </div>
-      <div id="deals-list" class="space-y-2"></div>
-    </div>
-
-    <!-- Brokers -->
-    <div class="col-span-12 lg:col-span-3">
-      <div class="flex items-center justify-between mb-3">
-        <div class="text-lg font-semibold">Brokers <span id="brokers-count" class="text-gray-500 text-sm"></span></div>
-      </div>
-      <input id="broker-search" class="input mb-2 text-sm" placeholder="Search brokers…" />
-      <div id="brokers-list" class="space-y-2 max-h-[70vh] overflow-y-auto pr-1"></div>
-    </div>
-
-    <!-- Detail pane (broker or deal) -->
-    <div class="col-span-12 lg:col-span-4">
-      <div id="detail-empty" class="card p-6 text-gray-500 text-sm text-center">
-        Click a deal or broker to see details, timeline, and compose follow-ups.
-      </div>
-      <div id="detail-pane" class="hidden"></div>
-    </div>
+      <div id="detail-pane"></div>
+    </aside>
   </div>
 </section>
 
@@ -621,12 +627,68 @@ $("an-test").onclick = async () => {
   }
 };
 
-/* ---------- DASHBOARD ---------- */
+/* ---------- DASHBOARD SHELL ---------- */
+
+const NAV_ITEMS = [
+  ["dashboard",   "◉ Dashboard",    "Overview + today's focus"],
+  ["deals",       "◈ Deals",         "Pipeline + CRUD"],
+  ["brokers",     "◆ Brokers",       "Directory + scorecard"],
+  ["docchase",    "✉ Doc Chase",     "Cadence follow-ups"],
+  ["intake",      "⇡ Intake",        "PDF → extract → apply"],
+  ["heatmap",     "▦ Heatmap",       "Asset × stage matrix"],
+  ["graph",       "◎ Graph",         "Broker ↔ deal network"],
+  ["map",         "◐ Map",           "Deals by state"],
+  ["reports",     "≡ Reports",       "Velocity + scorecard"],
+  ["underwriting","⚖ Underwriting",  "Docs-complete queue"],
+  ["admin",       "⚙ Admin",         "Config + diagnostics"],
+];
+
+const STAGE_CLASS = {
+  "incoming leads":    "pill-muted",
+  "docs requested":    "pill-warn",
+  "docs complete":     "pill-ok",
+  "underwriting":      "pill-ok",
+  "loi":               "pill-ok",
+  "under contract":    "pill-ok",
+  "closed":            "pill-ok",
+  "dead":              "pill-bad",
+};
+
+const ASSET_CLASSES = ["MF","Hotel","RV","MHP","Self-Storage","Industrial","Office","Retail","Other"];
+const US_STATES = ["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY"];
+
+state.role = "Director";
+state.view = "dashboard";
+state.analytics = null;
+state.cu_lists = [];
+
+function renderNav() {
+  $("nav").innerHTML = NAV_ITEMS.map(([id, label, hint]) => `
+    <button class="nav-item w-full text-left px-3 py-2 rounded-lg text-sm ${state.view === id ? "bg-blue-600/20 text-blue-300 border border-blue-800" : "text-gray-400 hover:bg-gray-800/60"}" data-view="${id}" title="${esc(hint)}">
+      ${esc(label)}
+    </button>
+  `).join("");
+  document.querySelectorAll(".nav-item").forEach(b => {
+    b.onclick = () => switchView(b.dataset.view);
+  });
+}
+
+function switchView(name) {
+  state.view = name;
+  state.selectedType = null;
+  state.selectedId = null;
+  hide("detail-drawer");
+  renderNav();
+  renderActiveView();
+}
+
+$("role-picker").onchange = (e) => { state.role = e.target.value; renderActiveView(); };
 $("btn-refresh").onclick = refreshDashboard;
+$("drawer-close").onclick = () => hide("detail-drawer");
 
 async function refreshDashboard() {
-  $("deals-list").innerHTML = '<div class="card p-4 text-sm text-gray-500"><span class="spin"></span> Loading deals…</div>';
-  $("brokers-list").innerHTML = '<div class="card p-4 text-sm text-gray-500"><span class="spin"></span> Loading brokers…</div>';
+  $("view-main").innerHTML = `<div class="card p-6 text-sm text-gray-500"><span class="spin"></span> Loading your pipeline…</div>`;
+  renderNav();
   try {
     const [dealsResp, brokersResp] = await Promise.all([
       apiGet("/api/v2/deals"),
@@ -634,77 +696,741 @@ async function refreshDashboard() {
     ]);
     state.deals = dealsResp.deals || [];
     state.brokers = brokersResp.brokers || [];
-    renderDeals();
-    renderBrokers();
+    // Analytics in background — non-blocking
+    apiGet("/api/v2/analytics/summary").then(a => { state.analytics = a; if (["dashboard","heatmap","reports","map"].includes(state.view)) renderActiveView(); }).catch(() => {});
+    renderActiveView();
   } catch (e) {
-    $("deals-list").innerHTML = `<div class="card p-4 text-sm text-red-400">${esc(e.message)}</div>`;
-    $("brokers-list").innerHTML = "";
+    $("view-main").innerHTML = `<div class="card p-4 text-sm text-red-400">${esc(e.message)}</div>`;
   }
 }
 
-function renderDeals() {
-  $("deals-count").textContent = `· ${state.deals.length}`;
-  $("deals-list").innerHTML = state.deals.length === 0
-    ? `<div class="card p-4 text-sm text-gray-500">No deals yet.</div>`
-    : state.deals.map(d => {
-        const loc = [d.city, d.state].filter(Boolean).join(", ");
-        return `
-      <div class="card p-3 cursor-pointer hover:border-blue-500" data-deal-id="${esc(d.id)}">
-        <div class="flex items-start justify-between gap-2">
-          <div class="font-semibold">${esc(d.name || "(untitled)")}</div>
-          <div class="text-xs text-gray-500 shrink-0">${esc(d.status || "—")}</div>
-        </div>
-        <div class="text-xs text-gray-400 mt-1">
-          ${esc(d.asset_class || "")} · ${esc(loc)} · ${fmtMoney(d.ask_price)}
-        </div>
-      </div>`}).join("");
-  document.querySelectorAll("[data-deal-id]").forEach(el =>
-    el.onclick = () => selectDeal(el.dataset.dealId));
+function renderActiveView() {
+  const main = $("view-main");
+  const v = state.view;
+  if (v === "dashboard")        main.innerHTML = tplDashboard();
+  else if (v === "deals")       main.innerHTML = tplDeals();
+  else if (v === "brokers")     main.innerHTML = tplBrokers();
+  else if (v === "docchase")    main.innerHTML = tplDocChase();
+  else if (v === "intake")      main.innerHTML = tplIntake();
+  else if (v === "heatmap")     main.innerHTML = tplHeatmap();
+  else if (v === "graph")       main.innerHTML = tplGraph();
+  else if (v === "map")         main.innerHTML = tplMap();
+  else if (v === "reports")     main.innerHTML = tplReports();
+  else if (v === "underwriting") main.innerHTML = tplUnderwriting();
+  else if (v === "admin")       main.innerHTML = tplAdmin();
+  wireViewHandlers();
 }
 
-function renderBrokers() {
-  const q = $("broker-search").value.toLowerCase();
-  const filtered = !q ? state.brokers : state.brokers.filter(b =>
-    (b.name || "").toLowerCase().includes(q) ||
-    (b.email || "").toLowerCase().includes(q) ||
-    (b.firm || "").toLowerCase().includes(q));
-  $("brokers-count").textContent = `· ${filtered.length}`;
-  $("brokers-list").innerHTML = filtered.length === 0
-    ? `<div class="card p-3 text-xs text-gray-500">No brokers.</div>`
-    : filtered.map(b => `
-      <div class="card p-3 cursor-pointer hover:border-blue-500" data-broker-id="${esc(b.id)}">
-        <div class="font-semibold text-sm">${esc(b.name || "(unnamed)")}</div>
-        <div class="text-xs text-gray-400">${esc(b.firm || "")}</div>
-        <div class="text-xs text-gray-500 mt-1">${esc(b.email || b.phone || "—")}</div>
-      </div>`).join("");
-  document.querySelectorAll("[data-broker-id]").forEach(el =>
-    el.onclick = () => selectBroker(el.dataset.brokerId));
+/* ---------- VIEW TEMPLATES ---------- */
+
+function tplDashboard() {
+  const totalValue = state.deals.reduce((s, d) => s + (Number(d.ask_price) || 0), 0);
+  const stageCounts = {};
+  state.deals.forEach(d => {
+    const s = (d.status || "unknown").toLowerCase();
+    stageCounts[s] = (stageCounts[s] || 0) + 1;
+  });
+  const docsNeeded = state.deals.filter(d => {
+    const s = (d.status || "").toLowerCase();
+    return s === "incoming leads" || s === "docs requested";
+  }).length;
+
+  const roleBrief = {
+    Director: `<div class="text-sm text-gray-300">Pipeline coverage: <b>${state.deals.length} deals · ${fmtMoney(totalValue)}</b>. <b>${docsNeeded}</b> awaiting docs. Broker bench: <b>${state.brokers.length}</b> active.</div>`,
+    VP: `<div class="text-sm text-gray-300">Focus today: the <b>${docsNeeded}</b> deals stuck in doc-request stage. Check Doc Chase for cadence candidates.</div>`,
+    Analyst: `<div class="text-sm text-gray-300">Ready for UW: <b>${(stageCounts["docs complete"] || 0) + (stageCounts["underwriting"] || 0)}</b>. Jump into <b>Underwriting</b>.</div>`,
+    IC: `<div class="text-sm text-gray-300">LOI + Under Contract: <b>${(stageCounts["loi"] || 0) + (stageCounts["under contract"] || 0)}</b>. Closed YTD (this dataset): <b>${stageCounts["closed"] || 0}</b>.</div>`,
+  };
+
+  return `
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <div class="text-2xl font-bold">Dashboard</div>
+        <div class="text-xs text-gray-500">Viewing as ${esc(state.role)}</div>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn" data-new-deal>+ New deal</button>
+        <button class="btn-ghost" data-new-broker>+ New broker</button>
+      </div>
+    </div>
+
+    <div class="card p-4 mb-4">${roleBrief[state.role] || roleBrief.Director}</div>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+      ${kpiCard("Active Deals", state.deals.length, "")}
+      ${kpiCard("Pipeline Value", fmtMoney(totalValue), "")}
+      ${kpiCard("Brokers", state.brokers.length, "")}
+      ${kpiCard("Docs Needed", docsNeeded, docsNeeded > 0 ? "pill-warn" : "pill-ok")}
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-3">Pipeline stages</div>
+        ${renderStageBars(stageCounts)}
+      </div>
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-3">Recent deals</div>
+        <div class="space-y-2">
+          ${(state.deals.slice(0, 8).map(d => dealRowCompact(d)).join("")) || '<div class="text-xs text-gray-500">None yet.</div>'}
+        </div>
+      </div>
+    </div>
+  `;
 }
-$("broker-search").oninput = renderBrokers;
+
+function kpiCard(label, value, pillClass) {
+  return `<div class="card p-3">
+    <div class="text-xs uppercase text-gray-500">${esc(label)}</div>
+    <div class="text-xl font-bold mt-1">${String(value)}</div>
+    ${pillClass ? `<span class="pill ${pillClass} mt-2 inline-block">&nbsp;</span>` : ""}
+  </div>`;
+}
+
+function renderStageBars(counts) {
+  const stages = ["incoming leads","docs requested","docs complete","underwriting","loi","under contract","closed","dead"];
+  const max = Math.max(1, ...stages.map(s => counts[s] || 0));
+  return `<div class="space-y-2">${stages.map(s => {
+    const n = counts[s] || 0;
+    const pct = Math.round((n / max) * 100);
+    const cls = STAGE_CLASS[s] || "pill-muted";
+    return `<div>
+      <div class="flex justify-between text-xs mb-1">
+        <span class="pill ${cls}">${esc(s)}</span>
+        <span class="text-gray-400">${n}</span>
+      </div>
+      <div class="h-2 bg-gray-800 rounded"><div class="h-full rounded bg-blue-600" style="width:${pct}%"></div></div>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function dealRowCompact(d) {
+  const loc = [d.city, d.state].filter(Boolean).join(", ");
+  const cls = STAGE_CLASS[(d.status || "").toLowerCase()] || "pill-muted";
+  return `
+    <div class="flex items-center justify-between border-b border-gray-800 pb-2 cursor-pointer hover:bg-gray-800/30 px-2 rounded" data-deal-id="${esc(d.id)}">
+      <div>
+        <div class="text-sm font-medium">${esc(d.name || "(untitled)")}</div>
+        <div class="text-xs text-gray-500">${esc(d.asset_class || "—")} · ${esc(loc || "—")}</div>
+      </div>
+      <div class="text-right">
+        <span class="pill ${cls}">${esc(d.status || "—")}</span>
+        <div class="text-xs text-gray-400 mt-1">${fmtMoney(d.ask_price)}</div>
+      </div>
+    </div>`;
+}
+
+function tplDeals() {
+  const assetFilter = state.filterAsset || "";
+  const stateFilter = state.filterState || "";
+  const statusFilter = state.filterStatus || "";
+  const q = (state.dealsQuery || "").toLowerCase();
+
+  let filtered = state.deals;
+  if (assetFilter) filtered = filtered.filter(d => d.asset_class === assetFilter);
+  if (stateFilter) filtered = filtered.filter(d => (d.state || "").toUpperCase() === stateFilter);
+  if (statusFilter) filtered = filtered.filter(d => (d.status || "").toLowerCase() === statusFilter);
+  if (q) filtered = filtered.filter(d => [d.name, d.city, d.broker_id, d.asset_class].some(v => (v || "").toString().toLowerCase().includes(q)));
+
+  const statuses = Array.from(new Set(state.deals.map(d => (d.status || "").toLowerCase()).filter(Boolean)));
+
+  return `
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <div class="text-2xl font-bold">Deals</div>
+        <div class="text-xs text-gray-500">${filtered.length} of ${state.deals.length} deals</div>
+      </div>
+      <button class="btn" data-new-deal>+ New deal</button>
+    </div>
+    <div class="card p-3 mb-3 grid grid-cols-1 md:grid-cols-4 gap-2">
+      <input id="f-deals-q" class="input text-sm" placeholder="Search…" value="${esc(q)}" />
+      <select id="f-asset" class="input text-sm"><option value="">All asset classes</option>${ASSET_CLASSES.map(a => `<option ${a === assetFilter ? "selected" : ""}>${a}</option>`).join("")}</select>
+      <select id="f-state" class="input text-sm"><option value="">All states</option>${US_STATES.map(s => `<option ${s === stateFilter ? "selected" : ""}>${s}</option>`).join("")}</select>
+      <select id="f-status" class="input text-sm"><option value="">All statuses</option>${statuses.map(s => `<option ${s === statusFilter ? "selected" : ""}>${s}</option>`).join("")}</select>
+    </div>
+    <div class="card overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="text-left text-xs text-gray-500 border-b border-gray-800">
+          <tr><th class="p-3">Deal</th><th>Asset</th><th>Location</th><th>Ask</th><th>Units</th><th>Stage</th><th></th></tr>
+        </thead>
+        <tbody>
+          ${filtered.length ? filtered.map(d => {
+            const loc = [d.city, d.state].filter(Boolean).join(", ");
+            const cls = STAGE_CLASS[(d.status || "").toLowerCase()] || "pill-muted";
+            return `<tr class="border-b border-gray-800 hover:bg-gray-800/40 cursor-pointer" data-deal-id="${esc(d.id)}">
+              <td class="p-3 font-medium">${esc(d.name || "(untitled)")}</td>
+              <td>${esc(d.asset_class || "—")}</td>
+              <td>${esc(loc || "—")}</td>
+              <td>${fmtMoney(d.ask_price)}</td>
+              <td>${esc(d.units || "—")}</td>
+              <td><span class="pill ${cls}">${esc(d.status || "—")}</span></td>
+              <td class="text-right pr-3"><button class="btn-ghost text-xs" data-edit-deal="${esc(d.id)}">Edit</button></td>
+            </tr>`;
+          }).join("") : `<tr><td colspan="7" class="p-6 text-center text-gray-500 text-sm">No matches.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function tplBrokers() {
+  const q = (state.brokersQuery || "").toLowerCase();
+  const filtered = !q ? state.brokers : state.brokers.filter(b =>
+    [b.name, b.firm, b.email, b.phone].some(v => (v || "").toLowerCase().includes(q)));
+
+  return `
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <div class="text-2xl font-bold">Brokers</div>
+        <div class="text-xs text-gray-500">${filtered.length} of ${state.brokers.length} brokers</div>
+      </div>
+      <div class="flex gap-2">
+        <button class="btn-ghost text-sm" data-seed-brokers>Seed 5 sample brokers</button>
+        <button class="btn" data-new-broker>+ New broker</button>
+      </div>
+    </div>
+    <div class="card p-3 mb-3">
+      <input id="f-brokers-q" class="input text-sm" placeholder="Search brokers…" value="${esc(q)}" />
+    </div>
+    <div class="card overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="text-left text-xs text-gray-500 border-b border-gray-800">
+          <tr><th class="p-3">Name</th><th>Firm</th><th>Region</th><th>Email</th><th>Phone</th><th>Tier</th><th></th></tr>
+        </thead>
+        <tbody>
+          ${filtered.length ? filtered.map(b => {
+            const rs = (b.relationship_strength || "Cold").toLowerCase();
+            const cls = rs === "hot" || rs === "trusted" ? "pill-ok" : rs === "warm" ? "pill-warn" : "pill-muted";
+            return `<tr class="border-b border-gray-800 hover:bg-gray-800/40 cursor-pointer" data-broker-id="${esc(b.id)}">
+              <td class="p-3 font-medium">${esc(b.name || "(unnamed)")}</td>
+              <td>${esc(b.firm || "—")}</td>
+              <td>${esc(b.region || "—")}</td>
+              <td>${esc(b.email || "—")}</td>
+              <td>${esc(b.phone || "—")}</td>
+              <td><span class="pill ${cls}">${esc(b.relationship_strength || "Cold")}</span></td>
+              <td class="text-right pr-3"><button class="btn-ghost text-xs" data-edit-broker="${esc(b.id)}">Edit</button></td>
+            </tr>`;
+          }).join("") : `<tr><td colspan="7" class="p-6 text-center text-gray-500 text-sm">No brokers. Try "Seed 5 sample brokers" to get started.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function tplDocChase() {
+  // Any deal where status implies docs are outstanding
+  const chaseDeals = state.deals.filter(d => {
+    const s = (d.status || "").toLowerCase();
+    return s === "incoming leads" || s === "docs requested" || (d.docs_outstanding && d.docs_outstanding.length > 0);
+  });
+  const cadence = ["D+2","D+4","D+7","D+10","D+14"];
+
+  return `
+    <div class="mb-4">
+      <div class="text-2xl font-bold">Doc Chase</div>
+      <div class="text-xs text-gray-500">${chaseDeals.length} deals awaiting documents · Multi-channel cadence</div>
+    </div>
+    <div class="card p-3 mb-4 text-xs text-gray-400">
+      <b class="text-gray-200">Cadence:</b>
+      D+0 initial ask · <b>D+2</b> warm email · <b>D+4</b> SMS · <b>D+7</b> call + email · <b>D+10</b> call + SMS · <b>D+14</b> relationship email. Click a day to AI-draft a tailored follow-up.
+    </div>
+    <div class="space-y-3">
+      ${chaseDeals.length ? chaseDeals.map(d => {
+        const broker = state.brokers.find(b => b.id === d.broker_id);
+        const loc = [d.city, d.state].filter(Boolean).join(", ");
+        const missing = Array.isArray(d.docs_outstanding) ? d.docs_outstanding.join(", ") : "—";
+        return `<div class="card p-4">
+          <div class="flex items-start justify-between">
+            <div>
+              <div class="font-semibold">${esc(d.name || "(untitled)")}</div>
+              <div class="text-xs text-gray-500 mt-1">${esc(d.asset_class || "—")} · ${esc(loc || "—")} · ${fmtMoney(d.ask_price)}</div>
+              <div class="text-xs mt-2 text-gray-400">Missing: <span class="text-gray-200">${esc(missing)}</span></div>
+              <div class="text-xs mt-1 text-gray-400">Broker: <span class="text-gray-200">${esc(broker?.name || d.broker_id || "(unlinked)")}</span></div>
+            </div>
+            <button class="btn-ghost text-xs" data-deal-id="${esc(d.id)}">Open</button>
+          </div>
+          <div class="mt-3 flex flex-wrap gap-2">
+            ${cadence.map(c => `<button class="btn-ghost text-xs" data-cadence="${c}" data-deal-id="${esc(d.id)}" data-broker-id="${esc(d.broker_id || "")}">${c} · draft</button>`).join("")}
+          </div>
+        </div>`;
+      }).join("") : `<div class="card p-6 text-center text-sm text-gray-500">No deals awaiting docs 🎉</div>`}
+    </div>
+  `;
+}
+
+function tplIntake() {
+  return `
+    <div class="mb-4">
+      <div class="text-2xl font-bold">Doc Intake</div>
+      <div class="text-xs text-gray-500">Upload a T-12, P&L, OM, or Rent Roll PDF. Fields auto-extract.</div>
+    </div>
+    <div class="card p-6">
+      <input type="file" id="intake-file" accept="application/pdf" class="text-sm" />
+      <button id="intake-parse" class="btn ml-3">Parse PDF</button>
+      <div id="intake-result" class="mt-4"></div>
+    </div>
+  `;
+}
+
+function tplHeatmap() {
+  const a = state.analytics;
+  if (!a) return `<div class="card p-6 text-center text-sm text-gray-500"><span class="spin"></span> Loading analytics…</div>`;
+  const assets = Object.keys(a.heatmap).sort();
+  const stages = ["incoming leads","docs requested","docs complete","underwriting","loi","under contract","closed","dead"];
+  if (assets.length === 0) return `<div class="card p-6 text-sm text-gray-500">No deals to visualize yet.</div>`;
+
+  const maxVal = Math.max(1, ...assets.flatMap(ac => stages.map(st => a.heatmap[ac]?.[st] || 0)));
+
+  return `
+    <div class="mb-4">
+      <div class="text-2xl font-bold">Heatmap</div>
+      <div class="text-xs text-gray-500">Asset class × Pipeline stage</div>
+    </div>
+    <div class="card p-4 overflow-x-auto">
+      <table class="text-xs">
+        <thead><tr>
+          <th class="p-2 text-left text-gray-500"></th>
+          ${stages.map(s => `<th class="p-2 text-gray-500 text-center" style="min-width:90px">${esc(s)}</th>`).join("")}
+        </tr></thead>
+        <tbody>
+          ${assets.map(ac => `<tr>
+            <td class="p-2 font-medium">${esc(ac)}</td>
+            ${stages.map(st => {
+              const n = a.heatmap[ac]?.[st] || 0;
+              const alpha = n === 0 ? 0.08 : 0.2 + (n / maxVal) * 0.6;
+              return `<td class="p-2 text-center" style="background:rgba(37,99,235,${alpha}); color: ${n > 0 ? "#fff" : "#6b7280"}; border: 1px solid #1f2937">${n}</td>`;
+            }).join("")}
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function tplGraph() {
+  const W = 700, H = 500, cx = W/2, cy = H/2, R = 180;
+  const brokers = state.brokers.slice(0, 20);
+  const deals = state.deals.slice(0, 30);
+  const bPos = {}, dPos = {};
+  brokers.forEach((b, i) => {
+    const t = (i / Math.max(1, brokers.length)) * 2 * Math.PI;
+    bPos[b.id] = { x: cx + Math.cos(t) * (R * 0.5), y: cy + Math.sin(t) * (R * 0.5) };
+  });
+  deals.forEach((d, i) => {
+    const t = (i / Math.max(1, deals.length)) * 2 * Math.PI;
+    dPos[d.id] = { x: cx + Math.cos(t) * R, y: cy + Math.sin(t) * R };
+  });
+  const lines = deals.map(d => {
+    const bp = bPos[d.broker_id];
+    const dp = dPos[d.id];
+    if (!bp || !dp) return "";
+    return `<line x1="${bp.x}" y1="${bp.y}" x2="${dp.x}" y2="${dp.y}" stroke="#1f2937" stroke-width="1"/>`;
+  }).join("");
+  const bNodes = brokers.map(b => {
+    const p = bPos[b.id];
+    return `<g><circle cx="${p.x}" cy="${p.y}" r="6" fill="#f59e0b"/><text x="${p.x}" y="${p.y-10}" text-anchor="middle" font-size="10" fill="#fbbf24">${esc((b.name || "").slice(0, 12))}</text></g>`;
+  }).join("");
+  const dNodes = deals.map(d => {
+    const p = dPos[d.id];
+    return `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#2563eb"/>`;
+  }).join("");
+
+  return `
+    <div class="mb-4">
+      <div class="text-2xl font-bold">Broker ↔ Deal Graph</div>
+      <div class="text-xs text-gray-500">Inner ring: brokers (orange) · Outer ring: deals (blue)</div>
+    </div>
+    <div class="card p-4 flex justify-center">
+      <svg viewBox="0 0 ${W} ${H}" style="max-width:100%; height:auto">
+        ${lines}${bNodes}${dNodes}
+      </svg>
+    </div>
+  `;
+}
+
+function tplMap() {
+  const byState = (state.analytics?.by_state) || {};
+  const states = Object.entries(byState).sort((a, b) => b[1] - a[1]);
+  return `
+    <div class="mb-4">
+      <div class="text-2xl font-bold">Deals by State</div>
+      <div class="text-xs text-gray-500">${states.length} states with activity</div>
+    </div>
+    <div class="card p-4 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+      ${states.length ? states.map(([st, n]) => `
+        <div class="border border-gray-800 rounded p-3 text-center hover:border-blue-500">
+          <div class="text-2xl font-bold">${n}</div>
+          <div class="text-xs text-gray-500 mt-1">${esc(st)}</div>
+        </div>
+      `).join("") : `<div class="text-sm text-gray-500 col-span-6">No state data yet.</div>`}
+    </div>
+  `;
+}
+
+function tplReports() {
+  const a = state.analytics;
+  if (!a) return `<div class="card p-6 text-center text-sm text-gray-500"><span class="spin"></span> Loading analytics…</div>`;
+  const velocity = Object.entries(a.velocity || {}).sort();
+  const maxV = Math.max(1, ...velocity.map(v => v[1]));
+
+  return `
+    <div class="mb-4"><div class="text-2xl font-bold">Reports</div><div class="text-xs text-gray-500">Velocity · Broker scorecard</div></div>
+
+    <div class="card p-4 mb-4">
+      <div class="text-sm font-semibold mb-3">Deal velocity (by month created)</div>
+      ${velocity.length ? `<div class="space-y-1">${velocity.map(([mo, n]) => `
+        <div class="flex items-center gap-3 text-xs">
+          <div class="w-20 text-gray-400">${esc(mo)}</div>
+          <div class="flex-1 bg-gray-800 rounded h-4 overflow-hidden">
+            <div class="h-full bg-blue-600" style="width:${(n/maxV)*100}%"></div>
+          </div>
+          <div class="w-8 text-right">${n}</div>
+        </div>
+      `).join("")}</div>` : `<div class="text-xs text-gray-500">No data yet.</div>`}
+    </div>
+
+    <div class="card p-4">
+      <div class="text-sm font-semibold mb-3">Broker scorecard</div>
+      <table class="w-full text-sm">
+        <thead class="text-xs text-gray-500 border-b border-gray-800 text-left">
+          <tr><th class="p-2">Broker</th><th>Firm</th><th class="text-right">Deals</th><th class="text-right">Complete</th><th class="text-right">Conv %</th><th class="text-right">Score</th></tr>
+        </thead>
+        <tbody>
+          ${(a.broker_scorecard || []).map(s => `<tr class="border-b border-gray-800 hover:bg-gray-800/40 cursor-pointer" data-broker-id="${esc(s.broker_id)}">
+            <td class="p-2 font-medium">${esc(s.name || "(?)")}</td>
+            <td>${esc(s.firm || "—")}</td>
+            <td class="text-right">${s.deal_count}</td>
+            <td class="text-right">${s.complete_count}</td>
+            <td class="text-right">${s.conversion_pct}%</td>
+            <td class="text-right font-semibold">${s.score}</td>
+          </tr>`).join("") || `<tr><td colspan="6" class="p-4 text-center text-gray-500 text-xs">No scorecard data.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function tplUnderwriting() {
+  const queue = state.deals.filter(d => {
+    const s = (d.status || "").toLowerCase();
+    return s === "docs complete" || s === "underwriting";
+  });
+  return `
+    <div class="mb-4"><div class="text-2xl font-bold">Underwriting Queue</div>
+    <div class="text-xs text-gray-500">${queue.length} deals with docs in, ready for model</div></div>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+      ${queue.length ? queue.map(d => {
+        const loc = [d.city, d.state].filter(Boolean).join(", ");
+        return `<div class="card p-4 cursor-pointer hover:border-blue-500" data-deal-id="${esc(d.id)}">
+          <div class="font-semibold">${esc(d.name || "(untitled)")}</div>
+          <div class="text-xs text-gray-500 mt-1">${esc(d.asset_class || "—")} · ${esc(loc || "—")}</div>
+          <div class="grid grid-cols-2 gap-2 mt-3 text-xs">
+            <div>Ask: <b class="text-gray-200">${fmtMoney(d.ask_price)}</b></div>
+            <div>NOI: <b class="text-gray-200">${fmtMoney(d.noi)}</b></div>
+            <div>Cap: <b class="text-gray-200">${esc(d.cap_rate || "—")}</b></div>
+            <div>Units: <b class="text-gray-200">${esc(d.units || "—")}</b></div>
+          </div>
+        </div>`;
+      }).join("") : `<div class="card p-6 text-sm text-gray-500 col-span-2 text-center">Queue empty. Move a deal to "docs complete" once a T-12 lands.</div>`}
+    </div>
+  `;
+}
+
+function tplAdmin() {
+  return `
+    <div class="mb-4"><div class="text-2xl font-bold">Admin</div><div class="text-xs text-gray-500">Diagnostics + ClickUp space</div></div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-2">Meta</div>
+        <pre class="text-xs text-gray-300 overflow-x-auto">${esc(JSON.stringify(state.meta, null, 2))}</pre>
+      </div>
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-2">Analytics summary</div>
+        <pre class="text-xs text-gray-300 overflow-x-auto">${esc(state.analytics ? JSON.stringify(state.analytics.totals, null, 2) : "(not loaded)")}</pre>
+      </div>
+      <div class="card p-4 lg:col-span-2">
+        <div class="text-sm font-semibold mb-2">ClickUp space lists <button id="load-lists" class="btn-ghost text-xs ml-2">Load</button></div>
+        <div id="lists-out" class="text-xs text-gray-400">Click Load to fetch all lists in the connected space with classification hints.</div>
+      </div>
+    </div>
+  `;
+}
+
+function wireViewHandlers() {
+  document.querySelectorAll("[data-deal-id]").forEach(el => {
+    el.onclick = (e) => { if (!e.target.dataset.editDeal && !e.target.dataset.cadence) selectDeal(el.dataset.dealId); };
+  });
+  document.querySelectorAll("[data-broker-id]").forEach(el => {
+    el.onclick = (e) => { if (!e.target.dataset.editBroker && !e.target.dataset.cadence) selectBroker(el.dataset.brokerId); };
+  });
+  document.querySelectorAll("[data-new-deal]").forEach(b => b.onclick = () => openDealEditor(null));
+  document.querySelectorAll("[data-new-broker]").forEach(b => b.onclick = () => openBrokerEditor(null));
+  document.querySelectorAll("[data-edit-deal]").forEach(b => b.onclick = (e) => { e.stopPropagation(); openDealEditor(b.dataset.editDeal); });
+  document.querySelectorAll("[data-edit-broker]").forEach(b => b.onclick = (e) => { e.stopPropagation(); openBrokerEditor(b.dataset.editBroker); });
+  document.querySelectorAll("[data-seed-brokers]").forEach(b => b.onclick = seedBrokers);
+  document.querySelectorAll("[data-cadence]").forEach(b => b.onclick = (e) => {
+    e.stopPropagation();
+    openCadenceDraft(b.dataset.cadence, b.dataset.dealId, b.dataset.brokerId);
+  });
+
+  // Filters (Deals view)
+  const qd = $("f-deals-q"); if (qd) qd.oninput = () => { state.dealsQuery = qd.value; renderActiveView(); setTimeout(() => $("f-deals-q")?.focus(), 0); };
+  const fa = $("f-asset"); if (fa) fa.onchange = () => { state.filterAsset = fa.value; renderActiveView(); };
+  const fs = $("f-state"); if (fs) fs.onchange = () => { state.filterState = fs.value; renderActiveView(); };
+  const fst = $("f-status"); if (fst) fst.onchange = () => { state.filterStatus = fst.value; renderActiveView(); };
+
+  // Brokers search
+  const qb = $("f-brokers-q"); if (qb) qb.oninput = () => { state.brokersQuery = qb.value; renderActiveView(); setTimeout(() => $("f-brokers-q")?.focus(), 0); };
+
+  // Intake parse
+  const ip = $("intake-parse"); if (ip) ip.onclick = parseIntakePdf;
+
+  // Admin: load lists
+  const ll = $("load-lists"); if (ll) ll.onclick = loadSpaceLists;
+}
 
 async function selectDeal(id) {
   state.selectedType = "deal"; state.selectedId = id;
-  hide("detail-empty"); show("detail-pane");
-  $("detail-pane").innerHTML = `<div class="card p-4 text-sm text-gray-500"><span class="spin"></span> Loading…</div>`;
+  show("detail-drawer");
+  $("detail-pane").innerHTML = `<div class="text-sm text-gray-500"><span class="spin"></span> Loading…</div>`;
   try {
     const d = await apiGet(`/api/v2/deals/${encodeURIComponent(id)}/full`);
     $("detail-pane").innerHTML = renderDealDetail(d);
     wireDetailHandlers();
   } catch (e) {
-    $("detail-pane").innerHTML = `<div class="card p-4 text-sm text-red-400">${esc(e.message)}</div>`;
+    $("detail-pane").innerHTML = `<div class="text-sm text-red-400">${esc(e.message)}</div>`;
   }
 }
 
 async function selectBroker(id) {
   state.selectedType = "broker"; state.selectedId = id;
-  hide("detail-empty"); show("detail-pane");
-  $("detail-pane").innerHTML = `<div class="card p-4 text-sm text-gray-500"><span class="spin"></span> Loading…</div>`;
+  show("detail-drawer");
+  $("detail-pane").innerHTML = `<div class="text-sm text-gray-500"><span class="spin"></span> Loading…</div>`;
   try {
     const b = await apiGet(`/api/v2/brokers/${encodeURIComponent(id)}/full`);
     $("detail-pane").innerHTML = renderBrokerDetail(b);
     wireDetailHandlers();
   } catch (e) {
-    $("detail-pane").innerHTML = `<div class="card p-4 text-sm text-red-400">${esc(e.message)}</div>`;
+    $("detail-pane").innerHTML = `<div class="text-sm text-red-400">${esc(e.message)}</div>`;
+  }
+}
+
+/* ---------- CRUD MODALS ---------- */
+
+function openDealEditor(dealId) {
+  const d = dealId ? state.deals.find(x => x.id === dealId) || {} : {};
+  $("compose-title").textContent = dealId ? "Edit deal" : "New deal";
+  $("compose-body").innerHTML = `
+    <div class="grid grid-cols-2 gap-2">
+      <div class="col-span-2"><label class="text-xs text-gray-500">Deal name</label>
+        <input id="e-name" class="input" value="${esc(d.name || "")}" placeholder="JPIG-123 · Austin TX 200 units" /></div>
+      <div><label class="text-xs text-gray-500">Asset class</label>
+        <select id="e-asset" class="input"><option value="">—</option>${ASSET_CLASSES.map(a => `<option ${d.asset_class === a ? "selected" : ""}>${a}</option>`).join("")}</select></div>
+      <div><label class="text-xs text-gray-500">Stage</label>
+        <select id="e-status" class="input">${["incoming leads","docs requested","docs complete","underwriting","loi","under contract","closed","dead"].map(s => `<option ${(d.status || "").toLowerCase() === s ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+      <div><label class="text-xs text-gray-500">City</label><input id="e-city" class="input" value="${esc(d.city || "")}" /></div>
+      <div><label class="text-xs text-gray-500">State</label>
+        <select id="e-state" class="input"><option value="">—</option>${US_STATES.map(s => `<option ${(d.state || "").toUpperCase() === s ? "selected" : ""}>${s}</option>`).join("")}</select></div>
+      <div><label class="text-xs text-gray-500">Ask price ($)</label><input id="e-ask" class="input" type="number" value="${esc(d.ask_price || "")}" /></div>
+      <div><label class="text-xs text-gray-500">NOI ($)</label><input id="e-noi" class="input" type="number" value="${esc(d.noi || "")}" /></div>
+      <div><label class="text-xs text-gray-500">Units / keys / pads</label><input id="e-units" class="input" type="number" value="${esc(d.units || "")}" /></div>
+      <div><label class="text-xs text-gray-500">Cap rate (%)</label><input id="e-cap" class="input" value="${esc(d.cap_rate || "")}" /></div>
+      <div><label class="text-xs text-gray-500">Broker</label>
+        <select id="e-broker" class="input"><option value="">—</option>${state.brokers.map(b => `<option value="${esc(b.id)}" ${d.broker_id === b.id ? "selected" : ""}>${esc(b.name)} · ${esc(b.firm || "")}</option>`).join("")}</select></div>
+      <div class="col-span-2"><label class="text-xs text-gray-500">Notes</label>
+        <textarea id="e-notes" class="input" rows="3">${esc(d.description_prose || "")}</textarea></div>
+    </div>
+    <div id="e-status-msg" class="text-xs"></div>
+    <div class="flex gap-2 justify-end">
+      ${dealId ? `<button id="e-delete" class="btn-danger">Delete</button>` : ""}
+      <button id="e-cancel" class="btn-ghost">Cancel</button>
+      <button id="e-save" class="btn">${dealId ? "Save" : "Create"}</button>
+    </div>
+  `;
+  show("compose-modal");
+  $("e-cancel").onclick = () => hide("compose-modal");
+  $("e-save").onclick = async () => {
+    const payload = {
+      name: $("e-name").value.trim(),
+      status: $("e-status").value,
+      asset_class: $("e-asset").value,
+      city: $("e-city").value.trim(),
+      state: $("e-state").value,
+      ask_price: Number($("e-ask").value) || null,
+      noi: Number($("e-noi").value) || null,
+      units: Number($("e-units").value) || null,
+      cap_rate: $("e-cap").value,
+      broker_id: $("e-broker").value || null,
+      description_prose: $("e-notes").value,
+    };
+    $("e-status-msg").innerHTML = '<span class="spin"></span> Saving…';
+    try {
+      if (dealId) await apiJson("PUT", `/api/v2/deals/${encodeURIComponent(dealId)}`, payload);
+      else await apiJson("POST", "/api/v2/deals", payload);
+      hide("compose-modal");
+      toast(dealId ? "Deal updated" : "Deal created");
+      await refreshDashboard();
+    } catch (e) {
+      $("e-status-msg").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
+    }
+  };
+  if (dealId) {
+    $("e-delete").onclick = async () => {
+      if (!confirm("Delete this deal?")) return;
+      try { await apiJson("DELETE", `/api/v2/deals/${encodeURIComponent(dealId)}`); hide("compose-modal"); toast("Deleted"); await refreshDashboard(); }
+      catch (e) { $("e-status-msg").innerHTML = `<span class="pill pill-bad">${esc(e.message)}</span>`; }
+    };
+  }
+}
+
+function openBrokerEditor(brokerId) {
+  const b = brokerId ? state.brokers.find(x => x.id === brokerId) || {} : {};
+  $("compose-title").textContent = brokerId ? "Edit broker" : "New broker";
+  $("compose-body").innerHTML = `
+    <div class="grid grid-cols-2 gap-2">
+      <div><label class="text-xs text-gray-500">Name</label><input id="b-name" class="input" value="${esc(b.name || "")}" /></div>
+      <div><label class="text-xs text-gray-500">Firm</label><input id="b-firm" class="input" value="${esc(b.firm || "")}" /></div>
+      <div><label class="text-xs text-gray-500">Region</label><input id="b-region" class="input" value="${esc(b.region || "")}" /></div>
+      <div><label class="text-xs text-gray-500">Relationship</label>
+        <select id="b-rel" class="input">${["Cold","Warm","Hot","Trusted"].map(r => `<option ${b.relationship_strength === r ? "selected" : ""}>${r}</option>`).join("")}</select></div>
+      <div><label class="text-xs text-gray-500">Email</label><input id="b-email" class="input" value="${esc(b.email || "")}" /></div>
+      <div><label class="text-xs text-gray-500">Phone</label><input id="b-phone" class="input" value="${esc(b.phone || "")}" /></div>
+      <div class="col-span-2"><label class="text-xs text-gray-500">Notes</label>
+        <textarea id="b-notes" class="input" rows="3">${esc(b.notes || "")}</textarea></div>
+    </div>
+    <div id="b-status-msg" class="text-xs"></div>
+    <div class="flex gap-2 justify-end">
+      ${brokerId ? `<button id="b-delete" class="btn-danger">Delete</button>` : ""}
+      <button id="b-cancel" class="btn-ghost">Cancel</button>
+      <button id="b-save" class="btn">${brokerId ? "Save" : "Create"}</button>
+    </div>
+  `;
+  show("compose-modal");
+  $("b-cancel").onclick = () => hide("compose-modal");
+  $("b-save").onclick = async () => {
+    const payload = {
+      name: $("b-name").value.trim(),
+      firm: $("b-firm").value.trim(),
+      region: $("b-region").value.trim(),
+      relationship_strength: $("b-rel").value,
+      email: $("b-email").value.trim(),
+      phone: $("b-phone").value.trim(),
+      notes: $("b-notes").value,
+    };
+    $("b-status-msg").innerHTML = '<span class="spin"></span> Saving…';
+    try {
+      if (brokerId) await apiJson("PUT", `/api/v2/brokers/${encodeURIComponent(brokerId)}`, payload);
+      else await apiJson("POST", "/api/v2/brokers", payload);
+      hide("compose-modal");
+      toast(brokerId ? "Broker updated" : "Broker created");
+      await refreshDashboard();
+    } catch (e) {
+      $("b-status-msg").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
+    }
+  };
+  if (brokerId) {
+    $("b-delete").onclick = async () => {
+      if (!confirm("Delete this broker?")) return;
+      try { await apiJson("DELETE", `/api/v2/brokers/${encodeURIComponent(brokerId)}`); hide("compose-modal"); toast("Deleted"); await refreshDashboard(); }
+      catch (e) { $("b-status-msg").innerHTML = `<span class="pill pill-bad">${esc(e.message)}</span>`; }
+    };
+  }
+}
+
+async function seedBrokers() {
+  if (!confirm("Create 5 sample brokers in your ClickUp broker list?")) return;
+  try {
+    const r = await apiJson("POST", "/api/v2/seed/sample-brokers", {});
+    toast(`Created ${r.created.length}, skipped ${r.skipped.length}`);
+    await refreshDashboard();
+  } catch (e) {
+    toast(`Seed failed: ${e.message}`, "err");
+  }
+}
+
+/* ---------- CADENCE DRAFT (Doc Chase one-click) ---------- */
+
+async function openCadenceDraft(day, dealId, brokerId) {
+  if (!brokerId) { toast("This deal has no linked broker yet.", "warn"); return; }
+  const deal = state.deals.find(d => d.id === dealId);
+  const broker = state.brokers.find(b => b.id === brokerId);
+  const channelByDay = { "D+2": "email", "D+4": "sms", "D+7": "email", "D+10": "sms", "D+14": "email" };
+  const channel = channelByDay[day] || "email";
+  openCompose(channel, brokerId);
+  // Pre-fill deal context + cadence purpose, then auto-draft
+  $("draft-deal").value = dealId || "";
+  setTimeout(() => {
+    const b = $("draft-btn");
+    if (b) b.click();
+  }, 300);
+  const status = $("compose-status");
+  if (status) status.textContent = `Drafting ${day} ${channel.toUpperCase()} for ${broker?.name || ""}…`;
+}
+
+/* ---------- INTAKE (PDF parse) ---------- */
+
+async function parseIntakePdf() {
+  const fi = $("intake-file");
+  if (!fi.files || fi.files.length === 0) { toast("Choose a PDF first", "warn"); return; }
+  const file = fi.files[0];
+  const fd = new FormData();
+  fd.append("file", file);
+  $("intake-result").innerHTML = `<div class="card p-3 text-sm text-gray-500"><span class="spin"></span> Extracting text and fields…</div>`;
+  try {
+    const res = await fetch("/api/v2/docs/parse", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${state.session.access_token}` },
+      body: fd,
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const r = await res.json();
+    const ex = r.extracted || {};
+    $("intake-result").innerHTML = `
+      <div class="card p-4">
+        <div class="text-sm font-semibold mb-2">${esc(r.filename)}</div>
+        <div class="text-xs text-gray-500 mb-3">${r.char_count.toLocaleString()} chars extracted</div>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+          ${Object.entries(ex).map(([k, v]) => `
+            <div class="border border-gray-800 rounded p-2">
+              <div class="text-xs text-gray-500">${esc(k)}</div>
+              <div class="font-medium">${v === null || v === undefined ? "—" : esc(v)}</div>
+            </div>
+          `).join("")}
+        </div>
+        <div class="mt-4">
+          <label class="text-xs text-gray-500">Apply to deal:</label>
+          <div class="flex gap-2 mt-1">
+            <select id="apply-deal" class="input text-sm"><option value="">(pick a deal)</option>${state.deals.map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("")}</select>
+            <button id="apply-btn" class="btn">Apply extracted fields</button>
+          </div>
+        </div>
+        <details class="mt-4"><summary class="text-xs text-gray-500 cursor-pointer">Raw text preview</summary>
+          <pre class="text-xs text-gray-400 whitespace-pre-wrap mt-2 max-h-60 overflow-y-auto">${esc(r.raw_text_preview || "")}</pre>
+        </details>
+      </div>`;
+    $("apply-btn").onclick = async () => {
+      const did = $("apply-deal").value;
+      if (!did) { toast("Pick a deal", "warn"); return; }
+      const patch = Object.fromEntries(Object.entries(ex).filter(([_, v]) => v !== null && v !== undefined && v !== ""));
+      try { await apiJson("PUT", `/api/v2/deals/${encodeURIComponent(did)}`, patch); toast("Deal updated"); await refreshDashboard(); }
+      catch (e) { toast(`Update failed: ${e.message}`, "err"); }
+    };
+  } catch (e) {
+    $("intake-result").innerHTML = `<div class="card p-3 text-sm text-red-400">Parse failed: ${esc(e.message)}</div>`;
+  }
+}
+
+/* ---------- ADMIN: load space lists ---------- */
+
+async function loadSpaceLists() {
+  $("lists-out").innerHTML = `<span class="spin"></span> Loading…`;
+  try {
+    const r = await apiGet("/api/v2/clickup/space-lists");
+    state.cu_lists = r.lists || [];
+    $("lists-out").innerHTML = `<table class="text-xs w-full"><thead><tr class="text-gray-500 text-left"><th class="p-1">Folder</th><th>List</th><th>Classification</th><th>ID</th></tr></thead><tbody>
+      ${(r.lists || []).map(l => `<tr class="border-t border-gray-800"><td class="p-1">${esc(l.folder_name || "—")}</td><td>${esc(l.name)}</td><td><span class="pill ${l.classification === "deals" ? "pill-ok" : l.classification === "brokers" ? "pill-warn" : "pill-muted"}">${esc(l.classification)}</span></td><td class="text-gray-500">${esc(l.id)}</td></tr>`).join("")}
+    </tbody></table>`;
+  } catch (e) {
+    $("lists-out").innerHTML = `<div class="text-red-400">${esc(e.message)}</div>`;
   }
 }
 
