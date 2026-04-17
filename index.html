@@ -79,6 +79,66 @@
   .step-dot.pending { background: #1f2937; color: #6b7280; }
   details > summary { cursor: pointer; list-style: none; }
   details > summary::-webkit-details-marker { display: none; }
+
+  /* ============== Discord-style Team tab ============== */
+  .bf-teamtab { display: grid; grid-template-columns: 220px 1fr; gap: 16px; min-height: 520px; }
+  .bf-rail { background: #0f1422; border: 1px solid #1f2937; border-radius: 12px; padding: 10px 6px; display: flex; flex-direction: column; gap: 8px; }
+  .bf-rail-section { display: flex; flex-direction: column; gap: 2px; }
+  .bf-rail-header { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; padding: 8px 10px 4px; }
+  .bf-rail-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin: 0 2px; border-radius: 8px; color: #9ca3af; font-size: 13px; background: transparent; border: none; cursor: pointer; text-align: left; width: calc(100% - 4px); }
+  .bf-rail-item:hover { background: #1a2133; color: #e5e7eb; }
+  .bf-rail-active { background: #1f2937; color: #e5e7eb; }
+  .bf-rail-hash { color: #4b5563; font-weight: 700; flex-shrink: 0; width: 14px; display: inline-flex; justify-content: center; }
+  .bf-rail-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bf-rail-count { font-size: 10px; color: #6b7280; background: #111827; padding: 2px 6px; border-radius: 999px; min-width: 20px; text-align: center; }
+  .bf-rail-new { color: #60a5fa; font-weight: 600; }
+  .bf-rail-new:hover { background: #172554; color: #93c5fd; }
+
+  .bf-pane { background: #111827; border: 1px solid #1f2937; border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+  .bf-pane-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid #1f2937; flex-wrap: wrap; }
+  .bf-pane-title { font-size: 16px; font-weight: 700; color: #e5e7eb; }
+  .bf-pane-count { font-weight: 500; color: #6b7280; font-size: 13px; }
+  .bf-pane-sub { font-size: 12px; color: #6b7280; margin-top: 2px; }
+  .bf-search { padding: 10px 20px 4px; }
+  .bf-search .input { font-size: 12px; padding: 6px 10px; }
+  .bf-pane-body { padding: 8px 12px 20px; overflow-y: auto; max-height: 65vh; }
+
+  .bf-group { margin-top: 12px; }
+  .bf-group-header { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; padding: 10px 10px 6px; font-weight: 700; }
+  .bf-group-count { color: #4b5563; font-weight: 500; margin-left: 4px; }
+  .bf-group-list { display: flex; flex-direction: column; }
+
+  .bf-person-row { display: grid; grid-template-columns: 36px 1fr auto auto 28px; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; transition: background .1s; position: relative; }
+  .bf-person-row:hover { background: #0f1422; }
+  .bf-person-pending { opacity: .85; }
+  .bf-avatar { width: 32px; height: 32px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 12px; flex-shrink: 0; }
+  .bf-avatar-pending { background: #374151 !important; color: #9ca3af; }
+  .bf-person-main { min-width: 0; }
+  .bf-person-name { font-size: 13px; font-weight: 600; color: #e5e7eb; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bf-person-email { font-size: 11px; color: #6b7280; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bf-self-tag { font-size: 9px; color: #60a5fa; background: #172554; padding: 1px 5px; border-radius: 4px; margin-left: 4px; font-weight: 500; }
+  .bf-person-teams { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 260px; }
+  .bf-team-pill { background: #1f2937; color: #9ca3af; font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+  .bf-team-pill-muted { background: transparent; color: #4b5563; border: 1px dashed #374151; }
+  .bf-person-role { min-width: 70px; text-align: right; }
+
+  .bf-kebab-wrap { position: relative; }
+  .bf-kebab-btn { background: transparent; border: none; color: #6b7280; cursor: pointer; font-size: 18px; line-height: 1; padding: 4px 8px; border-radius: 6px; }
+  .bf-kebab-btn:hover { background: #1f2937; color: #e5e7eb; }
+  .bf-kebab-menu { display: none; position: absolute; right: 0; top: 100%; margin-top: 4px; background: #0f1422; border: 1px solid #1f2937; border-radius: 8px; min-width: 220px; padding: 6px; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  .bf-kebab-menu.bf-open { display: block; }
+  .bf-kebab-item { display: block; width: 100%; text-align: left; background: transparent; border: none; color: #d1d5db; padding: 7px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  .bf-kebab-item:hover { background: #1f2937; color: #e5e7eb; }
+  .bf-kebab-item[data-current="1"] { color: #60a5fa; font-weight: 600; }
+  .bf-kebab-danger { color: #f87171; }
+  .bf-kebab-danger:hover { background: #450a0a; color: #fca5a5; }
+  .bf-kebab-disabled { color: #4b5563; font-size: 11px; padding: 6px 10px; font-style: italic; }
+  .bf-kebab-sub { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; padding: 6px 10px 2px; }
+  .bf-kebab-divider { height: 1px; background: #1f2937; margin: 4px 0; }
+
+  .bf-addmember-wrap { position: relative; }
+  .bf-addmember-pop { display: none; position: absolute; right: 0; top: 100%; margin-top: 6px; background: #0f1422; border: 1px solid #1f2937; border-radius: 10px; padding: 12px; min-width: 280px; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+  .bf-addmember-pop.bf-open { display: block; }
 </style>
 </head>
 <body class="min-h-screen">
@@ -1961,21 +2021,65 @@ function tplAdmin() {
 }
 
 /* ==========================================================================
-   TEAMS / WORKSPACES
-   Multi-team workspace switcher, member table, role editor, invitation flow.
+   TEAMS / WORKSPACES — Discord-style two-pane layout
+   Left rail = All people + sub-teams. Right pane = members grouped by role,
+   initials avatars, per-row kebab, inline Invite popover.
    ========================================================================== */
+
+/* Avatar colors — stable hash → palette pick. */
+const AVATAR_PALETTE = [
+  "#ef4444","#f97316","#f59e0b","#eab308","#84cc16","#22c55e",
+  "#10b981","#14b8a6","#06b6d4","#0ea5e9","#3b82f6","#6366f1",
+  "#8b5cf6","#a855f7","#d946ef","#ec4899","#f43f5e",
+];
+
+function _avatarColor(seed) {
+  const s = String(seed || "");
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return AVATAR_PALETTE[Math.abs(h) % AVATAR_PALETTE.length];
+}
+
+function _initials(name, email) {
+  const src = (name || "").trim() || (email || "").split("@")[0] || "?";
+  const parts = src.split(/[\s._-]+/).filter(Boolean);
+  const a = (parts[0] || src).charAt(0);
+  const b = parts.length > 1 ? parts[parts.length - 1].charAt(0) : (src.charAt(1) || "");
+  return (a + b).toUpperCase().slice(0, 2) || "?";
+}
+
+function _avatarHtml(name, email, seedId) {
+  const color = _avatarColor(seedId || email || name || "");
+  const init = _initials(name, email);
+  return `<span class="bf-avatar" style="background:${color}">${esc(init)}</span>`;
+}
+
+function _displayFor(p) {
+  // Prefer display_name → email local part → user_id prefix
+  if (p.display_name) return p.display_name;
+  if (p.email) return p.email.split("@")[0];
+  return (p.user_id || "").slice(0, 8) + "…";
+}
+
+/* ---------- Data loader ---------- */
+
+async function loadWorkspacePeople() {
+  const wsId = state.activeTeamId;
+  if (!wsId) return;
+  try {
+    const r = await apiGet(`/api/v2/workspaces/${encodeURIComponent(wsId)}/people`);
+    state.wsPeople = r || null;
+  } catch (e) {
+    state.wsPeople = { people: [], subteams: [], pending_invitations: [] };
+    console.warn("loadWorkspacePeople failed", e);
+  }
+}
+
+/* ---------- Root template ---------- */
 
 function tplTeamTab() {
   const teams = state.teams || [];
-  const activeId = state.activeTeamId;
-  const active = teams.find(t => t.id === activeId) || null;
-  const members = state.teamMembers || [];
-  const roles = state.teamRoles || [];
-  const invites = state.teamInvites || [];
-  const perms = (active && active.permissions) || {};
-  const canManageMembers = !!(perms.admin || perms.manage_members);
-  const canManageRoles = !!(perms.admin || perms.manage_roles);
-  const isOwner = !!(active && active.is_owner);
+  const active = teams.find(t => t.id === state.activeTeamId) || null;
 
   if (!teams.length) {
     return `
@@ -1984,181 +2088,532 @@ function tplTeamTab() {
       <button class="btn text-xs" data-team-new>Create workspace</button>`;
   }
 
-  const teamSwitcher = `
-    <div class="flex items-center gap-2 mb-4 flex-wrap">
-      <label class="text-xs text-gray-500">Active workspace:</label>
+  const isOwner = !!(active && active.is_owner);
+  const perms = (active && active.permissions) || {};
+  const canManageMembers = !!(perms.admin || perms.manage_members);
+  const canDelete = isOwner;
+
+  const header = `
+    <div class="flex items-center gap-2 mb-3 flex-wrap">
+      <div class="text-sm font-semibold">Workspace:</div>
       <select id="tm-active" class="input text-sm" style="width:auto">
-        ${teams.map(t => `<option value="${esc(t.id)}" ${t.id === activeId ? "selected" : ""}>${esc(t.name)}${t.is_owner ? " · Owner" : ""}</option>`).join("")}
+        ${teams.map(t => `<option value="${esc(t.id)}" ${t.id === state.activeTeamId ? "selected" : ""}>${esc(t.name)}${t.is_owner ? " · Owner" : ""}</option>`).join("")}
       </select>
       <button class="btn-ghost text-xs" data-team-new>+ New workspace</button>
       ${isOwner ? `<button class="btn-ghost text-xs" data-team-rename>Rename</button>` : ""}
-      ${isOwner ? `<button class="btn-danger text-xs ml-auto" data-team-delete>Delete workspace</button>` : `<button class="btn-ghost text-xs ml-auto" data-team-leave>Leave workspace</button>`}
+      ${canManageMembers ? `<button class="btn text-xs ml-2" data-team-invite>+ Invite people</button>` : ""}
+      ${canDelete
+        ? `<button class="btn-danger text-xs ml-auto" data-team-delete>Delete workspace</button>`
+        : `<button class="btn-ghost text-xs ml-auto" data-team-leave>Leave workspace</button>`}
     </div>`;
 
-  if (!active) return teamSwitcher + `<div class="text-xs text-gray-500">Select a workspace above.</div>`;
+  if (!active) return header + `<div class="text-xs text-gray-500">Select a workspace above.</div>`;
+  if (!state.wsPeople) {
+    // Kick off the fetch, render placeholder
+    loadWorkspacePeople().then(() => { if (state.view === "admin" && state.adminTab === "team") renderActiveView(); });
+    return header + `<div class="card p-6 text-center text-xs text-gray-500"><span class="spin"></span> Loading people…</div>`;
+  }
 
-  const memberRow = (m) => {
-    const role = m.team_roles || {};
-    const isSelf = m.user_id === state.session?.user?.id;
-    const canChange = canManageMembers && !m.is_owner;
-    const canRemove = (canManageMembers && !m.is_owner) || (isSelf && !m.is_owner);
-    return `
-      <tr class="border-t border-gray-800">
-        <td class="p-2">
-          <div class="text-xs text-gray-300">${esc(m.user_id)}</div>
-          ${isSelf ? `<div class="text-[10px] text-gray-500">you</div>` : ""}
-        </td>
-        <td class="p-2">
-          ${canChange ? `
-            <select class="input text-xs" data-role-change="${esc(m.id)}">
-              ${roles.map(r => `<option value="${esc(r.id)}" ${r.id === m.role_id ? "selected" : ""}>${esc(r.name)}</option>`).join("")}
-            </select>` : `<span class="pill">${esc(role.name || (m.is_owner ? "Owner" : "—"))}</span>`}
-        </td>
-        <td class="p-2 text-xs text-gray-500">${esc((m.added_at || "").slice(0, 10))}</td>
-        <td class="p-2 text-right">
-          ${m.is_owner ? `<span class="text-xs text-gray-500">Owner</span>` :
-            canRemove ? `<button class="btn-danger text-xs" data-remove-member="${esc(m.id)}">${isSelf ? "Leave" : "Remove"}</button>` : ""}
-        </td>
-      </tr>`;
-  };
-
-  const roleRow = (r) => {
-    const p = r.permissions || {};
-    const flags = [
-      p.admin && "admin",
-      p.manage_members && "manage_members",
-      p.manage_roles && "manage_roles",
-      p.manage_deals && "manage_deals",
-      p.view_analytics && "view_analytics",
-    ].filter(Boolean).join(", ") || "—";
-    const locked = r.is_system;
-    return `
-      <tr class="border-t border-gray-800">
-        <td class="p-2">
-          <div class="flex items-center gap-2">
-            <span class="font-medium">${esc(r.name)}</span>
-            ${r.is_system ? `<span class="pill pill-muted text-[10px]">system</span>` : ""}
-            ${r.is_default ? `<span class="pill pill-ok text-[10px]">default</span>` : ""}
-          </div>
-        </td>
-        <td class="p-2 text-xs text-gray-400">${esc(flags)}</td>
-        <td class="p-2 text-right">
-          ${canManageRoles ? `
-            <button class="btn-ghost text-xs" data-edit-role="${esc(r.id)}" ${locked && r.name === "Owner" ? "disabled" : ""}>Edit</button>
-            ${!locked ? `<button class="btn-danger text-xs ml-1" data-delete-role="${esc(r.id)}">Delete</button>` : ""}
-          ` : ""}
-        </td>
-      </tr>`;
-  };
-
-  const inviteRow = (i) => {
-    const statusPill = i.status === "pending" ? "pill-warn" : i.status === "accepted" ? "pill-ok" : "pill-bad";
-    return `
-      <tr class="border-t border-gray-800">
-        <td class="p-2">${esc(i.email)}</td>
-        <td class="p-2">${esc((i.team_roles || {}).name || "—")}</td>
-        <td class="p-2"><span class="pill ${statusPill}">${esc(i.status)}</span></td>
-        <td class="p-2 text-xs text-gray-500">${esc((i.expires_at || "").slice(0, 10))}</td>
-        <td class="p-2 text-right">
-          ${i.status === "pending" ? `
-            <button class="btn-ghost text-xs" data-copy-invite="${esc(i.invite_url)}">Copy link</button>
-            ${canManageMembers ? `<button class="btn-danger text-xs ml-1" data-revoke-invite="${esc(i.id)}">Revoke</button>` : ""}
-          ` : ""}
-        </td>
-      </tr>`;
-  };
-
-  return `
-    ${teamSwitcher}
-
-    <div class="text-[11px] uppercase tracking-wider text-gray-500 mb-2">Workspace · level 1</div>
-    <div class="grid grid-cols-2 gap-4">
-      <div>
-        <div class="flex items-center justify-between mb-2">
-          <div class="text-sm font-semibold">Workspace members (${members.length})</div>
-          ${canManageMembers ? `<button class="btn text-xs" data-team-invite>+ Invite</button>` : ""}
-        </div>
-        <div class="card p-0 overflow-x-auto">
-          <table class="text-xs w-full">
-            <thead class="text-gray-500 text-left"><tr><th class="p-2">User ID</th><th class="p-2">Role</th><th class="p-2">Added</th><th></th></tr></thead>
-            <tbody>${members.map(memberRow).join("") || `<tr><td colspan="4" class="p-3 text-center text-gray-500">No members yet.</td></tr>`}</tbody>
-          </table>
-        </div>
-      </div>
-
-      <div>
-        <div class="flex items-center justify-between mb-2">
-          <div class="text-sm font-semibold">Workspace roles (${roles.length})</div>
-          ${canManageRoles ? `<button class="btn text-xs" data-role-new>+ New role</button>` : ""}
-        </div>
-        <div class="card p-0 overflow-x-auto">
-          <table class="text-xs w-full">
-            <thead class="text-gray-500 text-left"><tr><th class="p-2">Name</th><th class="p-2">Permissions</th><th></th></tr></thead>
-            <tbody>${roles.map(roleRow).join("") || `<tr><td colspan="3" class="p-3 text-center text-gray-500">Loading…</td></tr>`}</tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <div class="mt-6">
-      <div class="text-sm font-semibold mb-2">Pending invitations (${invites.filter(i => i.status === "pending").length})</div>
-      <div class="card p-0 overflow-x-auto">
-        <table class="text-xs w-full">
-          <thead class="text-gray-500 text-left"><tr><th class="p-2">Email</th><th class="p-2">Role</th><th class="p-2">Status</th><th class="p-2">Expires</th><th></th></tr></thead>
-          <tbody>${invites.map(inviteRow).join("") || `<tr><td colspan="5" class="p-3 text-center text-gray-500">No invitations sent.</td></tr>`}</tbody>
-        </table>
-      </div>
-    </div>
-
-    ${tplSubteamSection(active)}`;
+  return header + tplTeamTwoPane(active);
 }
 
-/* ==========================================================================
-   SUB-TEAMS (Level 2 inside a workspace)
-   ========================================================================== */
+function tplTeamTwoPane(active) {
+  const wsp = state.wsPeople || { people: [], subteams: [], pending_invitations: [] };
+  const perms = active.permissions || {};
+  const canManageMembers = !!(active.is_owner || perms.admin || perms.manage_members);
+  const canCreateSubteam = canManageMembers;
 
-function tplSubteamSection(workspace) {
-  const perms = workspace.permissions || {};
-  const canCreateSubteam = !!(workspace.is_owner || perms.admin || perms.manage_members);
-  const subteams = state.subteams || [];
+  const sel = state.teamPaneSel || "all";
+  const subteams = wsp.subteams || [];
+  const allCount = (wsp.people || []).length;
 
-  const cardFor = (st) => {
-    const joinedBadge = st.joined
-      ? `<span class="pill pill-ok text-[10px]">${esc(st.my_role || "Member")}</span>`
-      : `<span class="pill pill-muted text-[10px]">not joined</span>`;
-    return `
-      <div class="card p-3 flex flex-col gap-1">
-        <div class="flex items-start justify-between gap-2">
-          <div class="min-w-0">
-            <div class="text-sm font-semibold truncate">${esc(st.name)}</div>
-            ${st.description ? `<div class="text-[11px] text-gray-500 truncate">${esc(st.description)}</div>` : ""}
-          </div>
-          ${joinedBadge}
+  const railItem = (key, label, count, icon) => {
+    const activeCls = key === sel ? "bf-rail-item bf-rail-active" : "bf-rail-item";
+    return `<button class="${activeCls}" data-rail="${esc(key)}">
+      <span class="bf-rail-hash">${icon || "#"}</span>
+      <span class="bf-rail-label">${esc(label)}</span>
+      <span class="bf-rail-count">${count}</span>
+    </button>`;
+  };
+
+  const countPerTeam = (stid) => (wsp.people || []).filter(p => (p.teams || []).some(t => t.team_id === stid)).length;
+
+  const rail = `
+    <aside class="bf-rail">
+      <div class="bf-rail-section">
+        <div class="bf-rail-header">Directory</div>
+        ${railItem("all", "All people", allCount, "👥")}
+      </div>
+      <div class="bf-rail-section">
+        <div class="bf-rail-header">Teams · ${subteams.length}</div>
+        ${subteams.map(s => railItem(s.id, s.name, countPerTeam(s.id), "#")).join("")}
+        ${canCreateSubteam ? `<button class="bf-rail-item bf-rail-new" data-subteam-new>+ New team</button>` : ""}
+      </div>
+    </aside>`;
+
+  let pane;
+  if (sel === "all") {
+    pane = tplPeoplePaneAll(active, wsp);
+  } else {
+    const st = subteams.find(s => s.id === sel);
+    if (!st) {
+      // Invalid selection — snap back to all
+      state.teamPaneSel = "all";
+      pane = tplPeoplePaneAll(active, wsp);
+    } else {
+      pane = tplPeoplePaneSubteam(active, st, wsp);
+    }
+  }
+
+  return `<div class="bf-teamtab">${rail}<section class="bf-pane">${pane}</section></div>`;
+}
+
+/* ---------- All-people pane ---------- */
+
+function tplPeoplePaneAll(active, wsp) {
+  const perms = active.permissions || {};
+  const canManage = !!(active.is_owner || perms.admin || perms.manage_members);
+  const roles = state.teamRoles || [];
+  const people = wsp.people || [];
+  const pending = wsp.pending_invitations || [];
+
+  // Group by ws role name (Owner first). Unknown role → "Member".
+  const groupOrder = ["Owner", "Admin", "Member", "Viewer"];
+  const groupedMap = new Map();
+  for (const p of people) {
+    const key = p.is_owner ? "Owner" : (p.ws_role_name || "Member");
+    if (!groupedMap.has(key)) groupedMap.set(key, []);
+    groupedMap.get(key).push(p);
+  }
+  const customKeys = [...groupedMap.keys()].filter(k => !groupOrder.includes(k)).sort();
+  const orderedKeys = [...groupOrder.filter(k => groupedMap.has(k)), ...customKeys];
+
+  const header = `
+    <div class="bf-pane-header">
+      <div>
+        <div class="bf-pane-title">All people · ${people.length}</div>
+        <div class="bf-pane-sub">Every member of this workspace and what teams they're in.</div>
+      </div>
+      <div class="flex gap-2">
+        ${canManage ? `<button class="btn text-xs" data-team-invite>+ Invite</button>` : ""}
+      </div>
+    </div>
+    <div class="bf-search">
+      <input id="bf-people-search" class="input text-xs" placeholder="🔎 Search name, email, team…" />
+    </div>`;
+
+  const personRow = (p) => {
+    const roleName = p.is_owner ? "Owner" : (p.ws_role_name || "Member");
+    const teamPills = (p.teams || []).map(t =>
+      `<span class="bf-team-pill" title="${esc(t.role_name || "Member")}">${esc(t.team_name || "team")}</span>`
+    ).join("") || `<span class="bf-team-pill bf-team-pill-muted">no teams</span>`;
+    const isSelf = p.user_id === state.session?.user?.id;
+    const canChangeRole = canManage && !p.is_owner;
+    const canRemove = (canManage && !p.is_owner) || (isSelf && !p.is_owner);
+    const kebab = `
+      <div class="bf-kebab-wrap">
+        <button class="bf-kebab-btn" data-kebab="p-${esc(p.membership_id)}" title="Actions">⋯</button>
+        <div class="bf-kebab-menu" id="kebab-p-${esc(p.membership_id)}">
+          ${canChangeRole ? `<div class="bf-kebab-sub">Change role</div>
+            ${roles.filter(r => r.name !== "Owner").map(r => `<button class="bf-kebab-item" data-role-change="${esc(p.membership_id)}" data-role-id="${esc(r.id)}" ${r.id === p.ws_role_id ? 'data-current="1"' : ""}>
+              ${esc(r.name)} ${r.id === p.ws_role_id ? "✓" : ""}
+            </button>`).join("")}
+            <div class="bf-kebab-divider"></div>` : ""}
+          ${canManage ? `<button class="bf-kebab-item" data-add-to-team="${esc(p.user_id)}">Add to team…</button>` : ""}
+          ${canRemove ? `<button class="bf-kebab-item bf-kebab-danger" data-remove-member="${esc(p.membership_id)}" data-self="${isSelf ? "1" : ""}">${isSelf ? "Leave workspace" : "Remove from workspace"}</button>` : ""}
+          ${p.is_owner ? `<div class="bf-kebab-item bf-kebab-disabled">Owner cannot be removed</div>` : ""}
         </div>
-        <div class="flex items-center justify-between mt-2">
-          <div class="text-[11px] text-gray-500">${st.member_count || 0} member${st.member_count === 1 ? "" : "s"}</div>
-          <div class="flex gap-1">
-            <button class="btn-ghost text-xs" data-subteam-manage="${esc(st.id)}">Manage</button>
+      </div>`;
+    return `
+      <div class="bf-person-row" data-search="${esc(((p.display_name || "") + " " + (p.email || "") + " " + (p.teams || []).map(t => t.team_name).join(" ")).toLowerCase())}">
+        ${_avatarHtml(p.display_name, p.email, p.user_id)}
+        <div class="bf-person-main">
+          <div class="bf-person-name">${esc(_displayFor(p))}${isSelf ? ` <span class="bf-self-tag">you</span>` : ""}</div>
+          <div class="bf-person-email">${esc(p.email || p.user_id)}</div>
+        </div>
+        <div class="bf-person-teams">${teamPills}</div>
+        <div class="bf-person-role">
+          <span class="pill">${esc(roleName)}</span>
+        </div>
+        ${kebab}
+      </div>`;
+  };
+
+  const pendingRow = (i) => `
+    <div class="bf-person-row bf-person-pending" data-search="${esc((i.email || "").toLowerCase())}">
+      <span class="bf-avatar bf-avatar-pending">✉</span>
+      <div class="bf-person-main">
+        <div class="bf-person-name">${esc(i.email)}</div>
+        <div class="bf-person-email">Invited · expires ${esc((i.expires_at || "").slice(0, 10))}</div>
+      </div>
+      <div class="bf-person-teams"></div>
+      <div class="bf-person-role"><span class="pill pill-warn">${esc(i.status)}</span></div>
+      <div class="bf-kebab-wrap">
+        <button class="bf-kebab-btn" data-kebab="i-${esc(i.invitation_id)}">⋯</button>
+        <div class="bf-kebab-menu" id="kebab-i-${esc(i.invitation_id)}">
+          <button class="bf-kebab-item" data-copy-invite-token="${esc(i.token)}">Copy invite link</button>
+          ${canManage ? `<button class="bf-kebab-item bf-kebab-danger" data-revoke-invite="${esc(i.invitation_id)}">Revoke invite</button>` : ""}
+        </div>
+      </div>
+    </div>`;
+
+  const groups = orderedKeys.map(k => {
+    const ppl = groupedMap.get(k) || [];
+    return `
+      <div class="bf-group">
+        <div class="bf-group-header">${esc(k)} <span class="bf-group-count">${ppl.length}</span></div>
+        <div class="bf-group-list">${ppl.map(personRow).join("")}</div>
+      </div>`;
+  }).join("");
+
+  const invitedBlock = pending.length ? `
+    <div class="bf-group">
+      <div class="bf-group-header">Invited <span class="bf-group-count">${pending.length}</span></div>
+      <div class="bf-group-list">${pending.map(pendingRow).join("")}</div>
+    </div>` : "";
+
+  return header + `<div class="bf-pane-body">${groups}${invitedBlock}</div>`;
+}
+
+/* ---------- Sub-team pane ---------- */
+
+function tplPeoplePaneSubteam(active, st, wsp) {
+  const perms = active.permissions || {};
+  const wsAdmin = !!(active.is_owner || perms.admin);
+  const myPerms = st.my_permissions || {};
+  const canManage = !!(wsAdmin || myPerms.team_admin || myPerms.manage_team_members);
+  const canDelete = wsAdmin;
+
+  // pull members & roles for this sub-team (load on demand)
+  const isActiveSub = state.activeSubteamId === st.id;
+  if (!isActiveSub) {
+    state.activeSubteamId = st.id;
+    state.subteamMembers = [];
+    state.subteamRoles = [];
+    loadActiveSubteamData().then(() => { if (state.view === "admin" && state.adminTab === "team") renderActiveView(); });
+    return `
+      <div class="bf-pane-header">
+        <div><div class="bf-pane-title">#${esc(st.name)}</div><div class="bf-pane-sub">Loading team…</div></div>
+      </div>
+      <div class="bf-pane-body"><div class="card p-6 text-center text-xs text-gray-500"><span class="spin"></span> Loading members…</div></div>`;
+  }
+
+  const members = state.subteamMembers || [];
+  const roles = state.subteamRoles || [];
+  const allPeople = wsp.people || [];
+
+  // identity lookup for sub-team members (reuse from wsp.people)
+  const identByUser = new Map((allPeople || []).map(p => [p.user_id, p]));
+
+  // people not yet in this sub-team — for Add-Member popover
+  const inTeam = new Set(members.map(m => m.user_id));
+  const addablePool = allPeople.filter(p => !inTeam.has(p.user_id));
+
+  const header = `
+    <div class="bf-pane-header">
+      <div>
+        <div class="bf-pane-title">#${esc(st.name)} <span class="bf-pane-count">· ${members.length}</span></div>
+        <div class="bf-pane-sub">${esc(st.description || "Sub-team inside " + active.name)}</div>
+      </div>
+      <div class="flex gap-2 items-center flex-wrap">
+        ${canManage ? `
+          <div class="bf-addmember-wrap">
+            <button class="btn text-xs" id="bf-addmember-btn">+ Add member</button>
+            <div class="bf-addmember-pop" id="bf-addmember-pop">
+              <div class="text-[11px] text-gray-400 mb-2">Pick from workspace</div>
+              <select id="bf-addmember-user" class="input text-xs mb-2">
+                <option value="">Select person…</option>
+                ${addablePool.map(p => `<option value="${esc(p.user_id)}">${esc(_displayFor(p))} (${esc(p.email || p.user_id.slice(0,8))})</option>`).join("")}
+              </select>
+              <select id="bf-addmember-role" class="input text-xs mb-2">
+                ${roles.map(r => `<option value="${esc(r.id)}" ${r.is_default ? "selected" : ""}>${esc(r.name)}</option>`).join("")}
+              </select>
+              <div class="flex gap-2 justify-end">
+                <button class="btn-ghost text-xs" id="bf-addmember-cancel">Cancel</button>
+                <button class="btn text-xs" id="bf-addmember-save">Add</button>
+              </div>
+            </div>
+          </div>
+        ` : ""}
+        ${canManage ? `<button class="btn-ghost text-xs" data-st-rename-inline>Rename</button>` : ""}
+        ${canManage ? `<button class="btn-ghost text-xs" data-st-roles-manage>Manage roles</button>` : ""}
+        ${canDelete ? `<button class="btn-danger text-xs" data-st-delete-inline>Delete team</button>` : ""}
+      </div>
+    </div>
+    <div class="bf-search">
+      <input id="bf-people-search" class="input text-xs" placeholder="🔎 Search members…" />
+    </div>`;
+
+  // group sub-team members by role
+  const grouped = new Map();
+  for (const m of members) {
+    const key = (m.workspace_team_roles || {}).name || "Member";
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(m);
+  }
+  const roleOrder = ["Team Admin", "Admin", "Member", "Viewer"];
+  const keys = [
+    ...roleOrder.filter(k => grouped.has(k)),
+    ...[...grouped.keys()].filter(k => !roleOrder.includes(k)).sort(),
+  ];
+
+  const memberRow = (m) => {
+    const ident = identByUser.get(m.user_id) || { display_name: null, email: m.email, user_id: m.user_id };
+    const isSelf = m.user_id === state.session?.user?.id;
+    const canChange = canManage;
+    const canRemoveRow = canManage || isSelf;
+    return `
+      <div class="bf-person-row" data-search="${esc(((ident.display_name || "") + " " + (ident.email || "") + " " + (m.email || "")).toLowerCase())}">
+        ${_avatarHtml(ident.display_name, ident.email || m.email, m.user_id)}
+        <div class="bf-person-main">
+          <div class="bf-person-name">${esc(_displayFor(ident))}${isSelf ? ` <span class="bf-self-tag">you</span>` : ""}</div>
+          <div class="bf-person-email">${esc(ident.email || m.email || m.user_id)}</div>
+        </div>
+        <div class="bf-person-role">
+          <span class="pill">${esc((m.workspace_team_roles || {}).name || "Member")}</span>
+        </div>
+        <div class="bf-kebab-wrap">
+          <button class="bf-kebab-btn" data-kebab="sm-${esc(m.id)}">⋯</button>
+          <div class="bf-kebab-menu" id="kebab-sm-${esc(m.id)}">
+            ${canChange ? `<div class="bf-kebab-sub">Change role</div>
+              ${roles.map(r => `<button class="bf-kebab-item" data-st-role-change="${esc(m.id)}" data-role-id="${esc(r.id)}">
+                ${esc(r.name)} ${r.id === m.role_id ? "✓" : ""}
+              </button>`).join("")}
+              <div class="bf-kebab-divider"></div>` : ""}
+            ${canRemoveRow ? `<button class="bf-kebab-item bf-kebab-danger" data-st-remove-member="${esc(m.id)}" data-self="${isSelf ? "1" : ""}">${isSelf ? "Leave team" : "Remove from team"}</button>` : ""}
           </div>
         </div>
       </div>`;
   };
 
-  return `
-    <div class="mt-8 pt-4 border-t border-gray-800">
-      <div class="flex items-center justify-between mb-2">
-        <div>
-          <div class="text-[11px] uppercase tracking-wider text-gray-500">Level 2 · inside this workspace</div>
-          <div class="text-sm font-semibold">Teams (${subteams.length})</div>
-          <div class="text-[11px] text-gray-500">Group workspace members into sub-teams with their own roles and permissions.</div>
-        </div>
-        ${canCreateSubteam ? `<button class="btn text-xs" data-subteam-new>+ New team</button>` : ""}
-      </div>
-      ${subteams.length
-        ? `<div class="grid grid-cols-3 gap-3">${subteams.map(cardFor).join("")}</div>`
-        : `<div class="card p-4 text-center text-xs text-gray-500">No teams yet. Create one to group workspace members (e.g., Acquisitions, Asset Mgmt, Dispositions).</div>`
+  const groups = keys.map(k => {
+    const ppl = grouped.get(k) || [];
+    return `
+      <div class="bf-group">
+        <div class="bf-group-header">${esc(k)} <span class="bf-group-count">${ppl.length}</span></div>
+        <div class="bf-group-list">${ppl.map(memberRow).join("")}</div>
+      </div>`;
+  }).join("") || `<div class="card p-6 text-center text-xs text-gray-500">No members yet. Click "+ Add member" to add a workspace member.</div>`;
+
+  return header + `<div class="bf-pane-body">${groups}</div>`;
+}
+
+/* ---------- Bindings for Discord-style Team tab ---------- */
+
+function bindTeamTabDiscord() {
+  const root = document.querySelector(".bf-teamtab");
+  if (!root) return;
+
+  // Rail item click → switch pane selection
+  root.querySelectorAll("[data-rail]").forEach(el => {
+    el.onclick = () => {
+      const key = el.dataset.rail;
+      state.teamPaneSel = key;
+      // Sub-team selected → invalidate its cached list so pane re-fetches
+      if (key !== "all") state.activeSubteamId = null;
+      renderActiveView();
+    };
+  });
+
+  // Search filter (shared id in both panes)
+  const srch = document.getElementById("bf-people-search");
+  if (srch) {
+    srch.oninput = () => {
+      const q = srch.value.toLowerCase().trim();
+      root.querySelectorAll(".bf-person-row").forEach(row => {
+        const hay = row.dataset.search || "";
+        row.style.display = (!q || hay.includes(q)) ? "" : "none";
+      });
+    };
+  }
+
+  // Kebab menu toggles (one open at a time)
+  const closeAllKebabs = () => {
+    root.querySelectorAll(".bf-kebab-menu.bf-open").forEach(m => m.classList.remove("bf-open"));
+    root.querySelectorAll(".bf-addmember-pop.bf-open").forEach(m => m.classList.remove("bf-open"));
+  };
+  root.querySelectorAll("[data-kebab]").forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const menu = document.getElementById("kebab-" + btn.dataset.kebab);
+      const wasOpen = menu && menu.classList.contains("bf-open");
+      closeAllKebabs();
+      if (menu && !wasOpen) menu.classList.add("bf-open");
+    };
+  });
+  // Click outside closes
+  if (!state._kebabOutsideHandler) {
+    state._kebabOutsideHandler = (e) => {
+      if (!e.target.closest(".bf-kebab-menu, .bf-kebab-btn, .bf-addmember-pop, #bf-addmember-btn")) {
+        document.querySelectorAll(".bf-kebab-menu.bf-open, .bf-addmember-pop.bf-open").forEach(m => m.classList.remove("bf-open"));
       }
-    </div>`;
+    };
+    document.addEventListener("click", state._kebabOutsideHandler);
+  }
+
+  // Role change (workspace) — buttons inside kebab menu
+  root.querySelectorAll("[data-role-change][data-role-id]").forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const memberId = btn.dataset.roleChange;
+      const roleId = btn.dataset.roleId;
+      closeAllKebabs();
+      try {
+        await apiJson("PATCH",
+          `/api/v2/teams/${encodeURIComponent(state.activeTeamId)}/members/${encodeURIComponent(memberId)}`,
+          { role_id: roleId });
+        toast("Role updated");
+        await Promise.all([loadActiveTeamData(), loadWorkspacePeople()]);
+        renderActiveView();
+      } catch (err) { toast("Update failed: " + err.message, "err"); }
+    };
+  });
+
+  // Remove / leave workspace
+  root.querySelectorAll("[data-remove-member]").forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      closeAllKebabs();
+      const isSelf = btn.dataset.self === "1";
+      if (!confirm(isSelf ? "Leave this workspace?" : "Remove this member from the workspace?")) return;
+      try {
+        await apiJson("DELETE",
+          `/api/v2/teams/${encodeURIComponent(state.activeTeamId)}/members/${encodeURIComponent(btn.dataset.removeMember)}`);
+        toast(isSelf ? "Left workspace" : "Removed");
+        if (isSelf) { state.activeTeamId = null; state.wsPeople = null; await loadTeams(); }
+        else { state.wsPeople = null; await Promise.all([loadActiveTeamData(), loadWorkspacePeople()]); }
+        renderActiveView();
+      } catch (err) { toast("Failed: " + err.message, "err"); }
+    };
+  });
+
+  // Add a person to a sub-team (from All-people kebab)
+  root.querySelectorAll("[data-add-to-team]").forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      closeAllKebabs();
+      const subteams = (state.wsPeople && state.wsPeople.subteams) || [];
+      if (!subteams.length) return toast("No teams yet — create one first", "err");
+      const userId = btn.dataset.addToTeam;
+      const names = subteams.map((s, i) => `${i + 1}. ${s.name}`).join("\n");
+      const pick = prompt("Add to which team?\n\n" + names + "\n\nType the number:");
+      const idx = parseInt(pick, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= subteams.length) return;
+      const st = subteams[idx];
+      try {
+        await apiJson("POST",
+          `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(st.id)}/members`,
+          { user_id: userId });
+        toast(`Added to ${st.name}`);
+        state.wsPeople = null;
+        await loadWorkspacePeople();
+        renderActiveView();
+      } catch (err) { toast("Add failed: " + err.message, "err"); }
+    };
+  });
+
+  // Copy invite link by token
+  root.querySelectorAll("[data-copy-invite-token]").forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      closeAllKebabs();
+      const tok = btn.dataset.copyInviteToken;
+      const url = `${location.origin}/?invite=${encodeURIComponent(tok)}`;
+      navigator.clipboard.writeText(url);
+      toast("Invite link copied");
+    };
+  });
+
+  // Revoke invite
+  root.querySelectorAll("[data-revoke-invite]").forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      closeAllKebabs();
+      if (!confirm("Revoke this invitation?")) return;
+      try {
+        await apiJson("DELETE",
+          `/api/v2/teams/${encodeURIComponent(state.activeTeamId)}/invitations/${encodeURIComponent(btn.dataset.revokeInvite)}`);
+        toast("Invite revoked");
+        state.wsPeople = null;
+        await loadWorkspacePeople();
+        renderActiveView();
+      } catch (err) { toast("Failed: " + err.message, "err"); }
+    };
+  });
+
+  // --- Sub-team pane: role change ---
+  root.querySelectorAll("[data-st-role-change][data-role-id]").forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      closeAllKebabs();
+      const memberId = btn.dataset.stRoleChange;
+      const roleId = btn.dataset.roleId;
+      try {
+        await apiJson("PATCH",
+          `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}/members/${encodeURIComponent(memberId)}`,
+          { role_id: roleId });
+        toast("Role updated");
+        await loadActiveSubteamData();
+        renderActiveView();
+      } catch (err) { toast("Update failed: " + err.message, "err"); }
+    };
+  });
+
+  // --- Sub-team pane: remove / leave ---
+  root.querySelectorAll("[data-st-remove-member]").forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      closeAllKebabs();
+      const isSelf = btn.dataset.self === "1";
+      if (!confirm(isSelf ? "Leave this team?" : "Remove this member from the team?")) return;
+      try {
+        await apiJson("DELETE",
+          `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}/members/${encodeURIComponent(btn.dataset.stRemoveMember)}`);
+        toast(isSelf ? "Left team" : "Removed");
+        state.wsPeople = null;
+        await Promise.all([loadActiveSubteamData(), loadWorkspacePeople()]);
+        if (isSelf) { state.teamPaneSel = "all"; state.activeSubteamId = null; }
+        renderActiveView();
+      } catch (err) { toast("Failed: " + err.message, "err"); }
+    };
+  });
+
+  // --- Sub-team pane: rename / delete / manage roles (inline) ---
+  const btnStRename = root.querySelector("[data-st-rename-inline]");
+  if (btnStRename) btnStRename.onclick = openSubteamRename;
+  const btnStDelete = root.querySelector("[data-st-delete-inline]");
+  if (btnStDelete) btnStDelete.onclick = deleteActiveSubteam;
+  const btnStRoles = root.querySelector("[data-st-roles-manage]");
+  if (btnStRoles) btnStRoles.onclick = () => openSubteamManager(state.activeSubteamId);
+
+  // --- Add-member popover (sub-team pane) ---
+  const addBtn = document.getElementById("bf-addmember-btn");
+  const addPop = document.getElementById("bf-addmember-pop");
+  if (addBtn && addPop) {
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      const wasOpen = addPop.classList.contains("bf-open");
+      document.querySelectorAll(".bf-kebab-menu.bf-open, .bf-addmember-pop.bf-open").forEach(m => m.classList.remove("bf-open"));
+      if (!wasOpen) addPop.classList.add("bf-open");
+    };
+    const cancel = document.getElementById("bf-addmember-cancel");
+    if (cancel) cancel.onclick = () => addPop.classList.remove("bf-open");
+    const save = document.getElementById("bf-addmember-save");
+    if (save) save.onclick = async () => {
+      const uid = (document.getElementById("bf-addmember-user") || {}).value;
+      const rid = (document.getElementById("bf-addmember-role") || {}).value;
+      if (!uid) return toast("Select a person", "err");
+      try {
+        await apiJson("POST",
+          `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}/members`,
+          { user_id: uid, role_id: rid });
+        toast("Added to team");
+        state.wsPeople = null;
+        await Promise.all([loadActiveSubteamData(), loadWorkspacePeople()]);
+        renderActiveView();
+      } catch (err) { toast("Add failed: " + err.message, "err"); }
+    };
+  }
 }
 
 async function loadTeams() {
@@ -2270,6 +2725,8 @@ function renderWorkspaceContext() {
     state.subteams = [];
     state.subteamMembers = [];
     state.subteamRoles = [];
+    state.wsPeople = null;
+    state.teamPaneSel = "all";
     // Workspace switch — everything else (deals/brokers/touchpoints) is
     // workspace-scoped on the backend, so drop the in-memory + persisted
     // entity cache and force a fresh load against the new workspace.
@@ -2397,10 +2854,11 @@ function openSubteamCreate() {
       const r = await apiJson("POST", `/api/v2/workspaces/${encodeURIComponent(ws.id)}/teams`, { name, description });
       hide("compose-modal");
       toast("Team created");
-      await loadActiveTeamData();
+      state.wsPeople = null;
       state.activeSubteamId = r.team.id;
+      state.teamPaneSel = r.team.id;
+      await Promise.all([loadActiveTeamData(), loadWorkspacePeople()]);
       renderActiveView();
-      openSubteamManager(r.team.id);
     } catch (e) { toast("Create failed: " + e.message, "err"); }
   };
 }
@@ -2864,7 +3322,9 @@ function openInviteModal() {
         </div>`;
       $("iv-copy").onclick = () => { navigator.clipboard.writeText(url); toast("Link copied"); };
       $("iv-email").value = "";
-      await loadActiveTeamData();
+      state.wsPeople = null;
+      await Promise.all([loadActiveTeamData(), loadWorkspacePeople()]);
+      if (state.view === "admin" && state.adminTab === "team") renderActiveView();
     } catch (e) { toast("Invite failed: " + e.message, "err"); }
   };
 }
@@ -3100,6 +3560,9 @@ function wireViewHandlers() {
   // Sub-teams: create new, manage existing
   const stNew = document.querySelector("[data-subteam-new]"); if (stNew) stNew.onclick = openSubteamCreate;
   document.querySelectorAll("[data-subteam-manage]").forEach(el => el.onclick = () => openSubteamManager(el.dataset.subteamManage));
+
+  // Discord-style Team tab bindings (rail, kebab, inline actions)
+  bindTeamTabDiscord();
 
   // Graph: filter toggles + reset + fit
   ["g-show-broker","g-show-deal","g-show-market","g-show-asset","g-show-coco"].forEach(id => { const el = $(id); if (el) el.onchange = applyGraphFilters; });
