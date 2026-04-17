@@ -393,39 +393,182 @@ def _lazy_mappers():
     return task_to_deal, task_to_broker, task_to_followup
 
 
+BROKER_LIST_HINTS = ("broker", "contact", "people", "directory", "vendor", "agent")
+SKIP_LIST_HINTS = ("sop", "template", "process", "playbook")
+
+
+async def _fetch_space_lists(user: UserContext) -> list[dict]:
+    """Return all lists in the user's configured ClickUp space, across all folders and folderless.
+
+    Each item: {id, name, folder_id, folder_name, source}
+    """
+    space_id = (user.config.get("clickup_space_id") or "").strip()
+    if not space_id:
+        return []
+
+    out: list[dict] = []
+    # Folderless lists
+    try:
+        r = await user_cu_get(user, f"/space/{space_id}/list", params={"archived": "false"})
+        for l in r.get("lists", []):
+            out.append({
+                "id": l.get("id"),
+                "name": l.get("name", ""),
+                "folder_id": None,
+                "folder_name": None,
+                "source": "folderless",
+            })
+    except Exception:
+        pass
+
+    # Folders + lists inside each folder
+    try:
+        fr = await user_cu_get(user, f"/space/{space_id}/folder", params={"archived": "false"})
+        for folder in fr.get("folders", []):
+            fid = folder.get("id")
+            fname = folder.get("name", "")
+            for l in folder.get("lists", []) or []:
+                out.append({
+                    "id": l.get("id"),
+                    "name": l.get("name", ""),
+                    "folder_id": fid,
+                    "folder_name": fname,
+                    "source": "folder",
+                })
+    except Exception:
+        pass
+
+    return [l for l in out if l.get("id")]
+
+
+def _classify_list(name: str) -> str:
+    n = (name or "").lower()
+    if any(h in n for h in SKIP_LIST_HINTS):
+        return "skip"
+    if any(h in n for h in BROKER_LIST_HINTS):
+        return "brokers"
+    return "deals"
+
+
+async def _fetch_tasks_for_list(user: UserContext, list_id: str) -> list[dict]:
+    try:
+        r = await user_cu_get(
+            user,
+            f"/list/{list_id}/task",
+            params={"include_closed": "true", "subtasks": "true"},
+        )
+        return r.get("tasks", []) or []
+    except Exception:
+        return []
+
+
+@router.get("/clickup/space-lists")
+async def v2_space_lists(user: UserContext = Depends(get_current_user)):
+    """Return every list in the connected space with classification hint.
+
+    Lets the UI show users exactly which lists feed Deals vs Brokers.
+    """
+    lists = await _fetch_space_lists(user)
+    for l in lists:
+        l["classification"] = _classify_list(l.get("name", ""))
+    return {"space_id": user.config.get("clickup_space_id"), "lists": lists}
+
+
 @router.get("/deals")
 async def v2_list_deals(user: UserContext = Depends(get_current_user)):
-    if not user.list_deals:
-        raise HTTPException(400, "ClickUp lists not set up. Run wizard.")
+    """Return all deals from the connected space.
+
+    Sourcing rules (in order):
+      1. If user configured a specific `clickup_list_active_deals` AND it has tasks, use only that.
+      2. Else, union every list in the configured space whose name does NOT look like
+         brokers/contacts/sops/templates. Each task is tagged with its source list name.
+    """
     task_to_deal, _, _ = _lazy_mappers()
-    resp = await user_cu_get(
-        user,
-        f"/list/{user.list_deals}/task",
-        params={"include_closed": "true", "subtasks": "true"},
-    )
-    return {"deals": [task_to_deal(t) for t in resp.get("tasks", [])]}
+
+    # Try configured list first
+    if user.list_deals:
+        try:
+            r = await user_cu_get(
+                user,
+                f"/list/{user.list_deals}/task",
+                params={"include_closed": "true", "subtasks": "true"},
+            )
+            tasks = r.get("tasks", []) or []
+            if tasks:
+                return {"deals": [task_to_deal(t) for t in tasks], "source": "configured_list"}
+        except Exception:
+            pass
+
+    # Fall back to space-wide union
+    lists = await _fetch_space_lists(user)
+    deals: list[dict] = []
+    for l in lists:
+        if _classify_list(l.get("name", "")) != "deals":
+            continue
+        list_id = l["id"]
+        list_name = l.get("name", "")
+        folder_name = l.get("folder_name")
+        tasks = await _fetch_tasks_for_list(user, list_id)
+        for t in tasks:
+            d = task_to_deal(t)
+            d["source_list_id"] = list_id
+            d["source_list_name"] = list_name
+            d["source_folder_name"] = folder_name
+            deals.append(d)
+    return {"deals": deals, "source": "space_wide"}
 
 
 @router.get("/brokers")
 async def v2_list_brokers(user: UserContext = Depends(get_current_user)):
-    if not user.list_brokers:
-        raise HTTPException(400, "ClickUp lists not set up. Run wizard.")
+    """Return all brokers from the connected space.
+
+    Sourcing rules (in order):
+      1. If user configured a specific `clickup_list_brokers` AND it has tasks, use only that.
+      2. Else, union every list in the configured space whose name looks like brokers/contacts/people.
+    """
     _, task_to_broker, _ = _lazy_mappers()
-    resp = await user_cu_get(
-        user, f"/list/{user.list_brokers}/task", params={"include_closed": "true"}
-    )
-    return {"brokers": [task_to_broker(t) for t in resp.get("tasks", [])]}
+
+    if user.list_brokers:
+        try:
+            r = await user_cu_get(
+                user, f"/list/{user.list_brokers}/task", params={"include_closed": "true"}
+            )
+            tasks = r.get("tasks", []) or []
+            if tasks:
+                return {"brokers": [task_to_broker(t) for t in tasks], "source": "configured_list"}
+        except Exception:
+            pass
+
+    lists = await _fetch_space_lists(user)
+    brokers: list[dict] = []
+    for l in lists:
+        if _classify_list(l.get("name", "")) != "brokers":
+            continue
+        list_id = l["id"]
+        list_name = l.get("name", "")
+        folder_name = l.get("folder_name")
+        tasks = await _fetch_tasks_for_list(user, list_id)
+        for t in tasks:
+            b = task_to_broker(t)
+            b["source_list_id"] = list_id
+            b["source_list_name"] = list_name
+            b["source_folder_name"] = folder_name
+            brokers.append(b)
+    return {"brokers": brokers, "source": "space_wide"}
 
 
 @router.get("/followups")
 async def v2_list_followups(user: UserContext = Depends(get_current_user)):
     if not user.list_followups:
-        raise HTTPException(400, "ClickUp lists not set up. Run wizard.")
+        return {"followups": [], "source": "not_configured"}
     _, _, task_to_followup = _lazy_mappers()
-    resp = await user_cu_get(
-        user, f"/list/{user.list_followups}/task", params={"include_closed": "true"}
-    )
-    return {"followups": [task_to_followup(t) for t in resp.get("tasks", [])]}
+    try:
+        resp = await user_cu_get(
+            user, f"/list/{user.list_followups}/task", params={"include_closed": "true"}
+        )
+        return {"followups": [task_to_followup(t) for t in resp.get("tasks", [])], "source": "configured_list"}
+    except Exception:
+        return {"followups": [], "source": "error"}
 
 
 # =============================================================
