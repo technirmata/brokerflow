@@ -2061,11 +2061,20 @@ async def v2_analytics_reports(user: UserContext = Depends(get_current_user)):
     bmap = {b["id"]: b for b in brokers}
 
     stages = ["incoming leads", "docs requested", "docs complete", "underwriting", "loi", "under contract", "closed", "dead"]
-    funnel = {s: 0 for s in stages}
+    funnel_counts = {s: 0 for s in stages}
     for d in deals:
         s = (d.get("status") or "").lower()
-        if s in funnel:
-            funnel[s] = funnel[s] + 1
+        if s in funnel_counts:
+            funnel_counts[s] = funnel_counts[s] + 1
+
+    # Build ordered array w/ stage-over-stage conversion %
+    funnel = []
+    _prev = None
+    for _s in stages:
+        _n = funnel_counts[_s]
+        _conv = 100.0 if _prev is None else (round((_n / _prev) * 100, 1) if _prev else 0.0)
+        funnel.append({"stage": _s, "count": _n, "conversion_pct": _conv})
+        _prev = _n
 
     # Avg time in stage — rough, from date_created to now for non-terminal deals
     now_ms = int(_time.time() * 1000)
@@ -2095,6 +2104,9 @@ async def v2_analytics_reports(user: UserContext = Depends(get_current_user)):
             "name": b.get("name"),
             "firm": b.get("firm"),
             "tier": b.get("relationship_strength") or "Cold",
+            "total": len(bdeals),
+            "active": active,
+            "closed": closed,
             "total_deals": len(bdeals),
             "active_deals": active,
             "closed_deals": closed,
