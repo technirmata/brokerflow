@@ -297,10 +297,18 @@ SUPABASE_JWT_SECRET=your-project-jwt-secret</pre>
     <aside class="w-56 border-r border-gray-800 py-4 px-3 shrink-0">
       <!-- Workspace (heading) + Team (subheading) context switcher -->
       <div id="ws-context" class="px-2 mb-4">
-        <select id="topbar-workspace" class="w-full bg-gray-900/60 border border-gray-800 hover:border-gray-600 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 text-sm font-semibold text-gray-100 cursor-pointer mb-1.5">
+        <div class="flex items-center justify-between mb-1 px-0.5">
+          <label for="topbar-workspace" class="text-[10px] uppercase tracking-wider text-gray-500">Workspace</label>
+          <button id="ws-rename-btn" class="text-gray-500 hover:text-blue-300 text-xs leading-none" title="Rename this workspace" aria-label="Rename workspace" style="display:none">✎</button>
+        </div>
+        <select id="topbar-workspace" title="Switch between workspaces you own or belong to" class="w-full bg-gray-900/60 border border-gray-800 hover:border-gray-600 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 text-sm font-semibold text-gray-100 cursor-pointer mb-2">
           <option>(loading…)</option>
         </select>
-        <select id="topbar-subteam" class="w-full bg-transparent border border-transparent hover:border-gray-700 focus:border-blue-500 focus:outline-none rounded px-2 py-1 text-[11px] text-gray-400 cursor-pointer">
+        <div class="flex items-center justify-between mb-1 px-0.5">
+          <label for="topbar-subteam" class="text-[10px] uppercase tracking-wider text-gray-500">Team</label>
+          <button id="st-rename-btn" class="text-gray-500 hover:text-blue-300 text-xs leading-none" title="Rename this team" aria-label="Rename team" style="display:none">✎</button>
+        </div>
+        <select id="topbar-subteam" title="Pick a team inside this workspace (or view all)" class="w-full bg-transparent border border-gray-800 hover:border-gray-700 focus:border-blue-500 focus:outline-none rounded px-2 py-1 text-xs text-gray-300 cursor-pointer">
           <option>—</option>
         </select>
       </div>
@@ -308,8 +316,9 @@ SUPABASE_JWT_SECRET=your-project-jwt-secret</pre>
       <nav id="nav" class="space-y-1">
         <!-- Populated by JS -->
       </nav>
-      <div class="mt-6 pt-4 border-t border-gray-800">
-        <button id="btn-refresh" class="btn-ghost text-xs w-full">↻ Refresh data</button>
+      <div class="mt-6 pt-4 border-t border-gray-800 space-y-1">
+        <button id="btn-refresh" class="btn-ghost text-xs w-full" title="Re-fetch deals, brokers, and analytics from ClickUp">↻ Refresh data</button>
+        <button id="btn-sign-out" class="btn-ghost text-xs w-full text-gray-500 hover:text-red-300" title="Sign out of BrokerFlow">Sign out</button>
       </div>
     </aside>
 
@@ -457,10 +466,17 @@ function loadEntityCache() {
 }
 
 /* ---------- API wrappers ---------- */
+// Build common headers — auth bearer + active workspace scoping header so
+// the backend routes data to the right workspace (owner's ClickUp creds,
+// workspace-scoped Supabase rows).
+function _authHeaders() {
+  const h = {};
+  if (state.session) h["Authorization"] = `Bearer ${state.session.access_token}`;
+  if (state.activeTeamId) h["X-Workspace-Id"] = state.activeTeamId;
+  return h;
+}
 async function apiGet(path) {
-  const res = await fetch(path, {
-    headers: state.session ? { Authorization: `Bearer ${state.session.access_token}` } : {},
-  });
+  const res = await fetch(path, { headers: _authHeaders() });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json();
 }
@@ -469,7 +485,7 @@ async function apiJson(method, path, body) {
     method,
     headers: {
       "Content-Type": "application/json",
-      ...(state.session ? { Authorization: `Bearer ${state.session.access_token}` } : {}),
+      ..._authHeaders(),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
@@ -525,6 +541,16 @@ async function routeAfterLogin() {
     // Paint cached deals/brokers/teams INSTANTLY from localStorage so the
     // user sees their pipeline in <50ms. Fresh network fetches run in
     // parallel underneath and replace cached state when they land.
+    // Restore the last-active workspace id BEFORE firing any API calls so
+    // apiGet/apiJson stamp X-Workspace-Id on the very first deals/brokers
+    // fetch. Without this, the first load after reload would hit the
+    // backend's default-workspace fallback and briefly show the wrong data
+    // for users who had switched to a secondary workspace.
+    try {
+      const savedWs = loadWsContext();
+      if (savedWs.activeTeamId) state.activeTeamId = savedWs.activeTeamId;
+      if (savedWs.activeSubteamId) state.activeSubteamId = savedWs.activeSubteamId;
+    } catch (_) {}
     const cache = loadEntityCache();
     if (cache) {
       if (Array.isArray(cache.deals))   state.deals   = cache.deals;
@@ -590,12 +616,15 @@ $("btn-guest").onclick = async () => {
   await routeAfterLogin();
 };
 
-$("btn-logout").onclick = async () => {
+const doSignOut = async () => {
   await state.supabase.auth.signOut();
   state.session = null;
   hide("view-dashboard"); hide("view-wizard"); hide("topbar");
   show("view-auth");
 };
+$("btn-logout").onclick = doSignOut;
+const sidebarSignOut = document.getElementById("btn-sign-out");
+if (sidebarSignOut) sidebarSignOut.onclick = doSignOut;
 
 /* ---------- WIZARD ---------- */
 function renderWizardStep(n) {
@@ -753,8 +782,7 @@ const NAV_ITEMS = [
   ["graph",       "◎ Graph",         "Broker ↔ deal network"],
   ["map",         "◐ Map",           "Deals by state"],
   ["reports",     "≡ Reports",       "Velocity + scorecard"],
-  ["underwriting","⚖ Underwriting",  "Docs-complete queue"],
-  ["admin",       "⚙ Admin",         "Config + diagnostics"],
+  ["admin",       "⚙ Settings",      "Profile, integrations, team, and danger zone"],
 ];
 
 const STAGE_CLASS = {
@@ -910,7 +938,6 @@ function renderActiveView() {
   else if (v === "graph")       main.innerHTML = tplGraph();
   else if (v === "map")         main.innerHTML = tplMap();
   else if (v === "reports")     main.innerHTML = tplReports();
-  else if (v === "underwriting") main.innerHTML = tplUnderwriting();
   else if (v === "admin")       main.innerHTML = tplAdmin();
   wireViewHandlers();
 }
@@ -932,7 +959,7 @@ function tplDashboard() {
   const roleBrief = {
     Director: `<div class="text-sm text-gray-300">Pipeline coverage: <b>${state.deals.length} deals · ${fmtMoney(totalValue)}</b>. <b>${docsNeeded}</b> awaiting docs. Broker bench: <b>${state.brokers.length}</b> active.</div>`,
     VP: `<div class="text-sm text-gray-300">Focus today: the <b>${docsNeeded}</b> deals stuck in doc-request stage. Check Doc Chase for cadence candidates.</div>`,
-    Analyst: `<div class="text-sm text-gray-300">Ready for UW: <b>${(stageCounts["docs complete"] || 0) + (stageCounts["underwriting"] || 0)}</b>. Jump into <b>Underwriting</b>.</div>`,
+    Analyst: `<div class="text-sm text-gray-300">Docs complete (ready for UW handoff): <b>${(stageCounts["docs complete"] || 0) + (stageCounts["underwriting"] || 0)}</b>.</div>`,
     IC: `<div class="text-sm text-gray-300">LOI + Under Contract: <b>${(stageCounts["loi"] || 0) + (stageCounts["under contract"] || 0)}</b>. Closed YTD (this dataset): <b>${stageCounts["closed"] || 0}</b>.</div>`,
   };
 
@@ -1647,112 +1674,6 @@ function tplReports() {
   `;
 }
 
-function tplUnderwriting() {
-  const queue = state.deals.filter(d => {
-    const s = (d.status || "").toLowerCase();
-    return s === "docs complete" || s === "underwriting";
-  });
-
-  const quickCalc = (d) => {
-    const ask = Number(d.ask_price) || 0;
-    const noi = Number(d.noi) || 0;
-    const units = Number(d.units) || 0;
-    const capRaw = (d.cap_rate || "").toString().replace("%","").trim();
-    const capPct = Number(capRaw) || (ask && noi ? (noi / ask) * 100 : 0);
-    const impliedNoi = capPct && ask ? ask * (capPct / 100) : noi;
-    const ppu = units && ask ? ask / units : 0;
-    // Quick DSCR at 70% LTV, 6.5% rate, 30y amort
-    const loan = ask * 0.70;
-    const r = 0.065 / 12;
-    const n = 360;
-    const monthly = loan && r ? (loan * r) / (1 - Math.pow(1 + r, -n)) : 0;
-    const annualDebt = monthly * 12;
-    const dscr = annualDebt ? (impliedNoi / annualDebt) : 0;
-    // Simple 5-yr NOI assume 3% growth, exit cap +50bps
-    const growth = 0.03;
-    const noiY5 = impliedNoi * Math.pow(1 + growth, 5);
-    const exitCap = (capPct + 0.5) / 100;
-    const exitVal = exitCap ? noiY5 / exitCap : 0;
-    // Crude unlevered IRR approximation
-    let irr = 0;
-    if (ask > 0 && exitVal > 0) {
-      const cashFlows = [impliedNoi, impliedNoi*1.03, impliedNoi*1.06, impliedNoi*1.09, impliedNoi*1.125 + exitVal];
-      let lo = -0.5, hi = 2.0;
-      for (let k = 0; k < 60; k++) {
-        const mid = (lo + hi) / 2;
-        let npv = -ask;
-        cashFlows.forEach((cf, i) => npv += cf / Math.pow(1 + mid, i + 1));
-        if (npv > 0) lo = mid; else hi = mid;
-      }
-      irr = (lo + hi) / 2;
-    }
-    return { ask, noi: impliedNoi, capPct, ppu, dscr, noiY5, exitVal, irr };
-  };
-
-  const sensitivityHtml = (d) => {
-    const base = quickCalc(d);
-    if (!base.ask) return `<div class="text-xs text-gray-500">Need ask price for sensitivity.</div>`;
-    const capOffsets = [-50, -25, 0, 25, 50];
-    const rentOffsets = [-5, -2.5, 0, 2.5, 5];
-    return `<table class="text-xs w-full">
-      <thead><tr><th class="text-left text-gray-500 p-1">Rent Δ ↓ / Cap Δbps →</th>${capOffsets.map(c => `<th class="text-center text-gray-500 p-1">${c >= 0 ? "+" : ""}${c}</th>`).join("")}</tr></thead>
-      <tbody>
-        ${rentOffsets.map(ro => `<tr><td class="p-1 text-gray-400">${ro >= 0 ? "+" : ""}${ro}%</td>${capOffsets.map(co => {
-          const adjNoi = base.noi * (1 + ro / 100);
-          const adjCap = (base.capPct + co / 100) / 100;
-          const adjVal = adjCap ? adjNoi / adjCap : 0;
-          const delta = base.ask ? ((adjVal - base.ask) / base.ask) * 100 : 0;
-          const col = delta >= 0 ? "#4ade80" : "#f87171";
-          return `<td class="p-1 text-center" style="color:${col}">${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%</td>`;
-        }).join("")}</tr>`).join("")}
-      </tbody>
-    </table>`;
-  };
-
-  return `
-    <div class="mb-4 flex items-start justify-between">
-      <div>
-        <div class="text-2xl font-bold">Underwriting Queue</div>
-        <div class="text-xs text-gray-500">${queue.length} deals with docs in · Quick-model per card (70/30 LTV, 6.5% int, 3% growth)</div>
-      </div>
-      <button class="btn-ghost text-xs" id="uw-export">Export UW snapshot</button>
-    </div>
-    <div class="grid grid-cols-1 xl:grid-cols-2 gap-3">
-      ${queue.length ? queue.map(d => {
-        const loc = [d.city, d.state].filter(Boolean).join(", ");
-        const q = quickCalc(d);
-        const dscrColor = q.dscr >= 1.35 ? "text-green-400" : q.dscr >= 1.20 ? "text-yellow-400" : q.dscr > 0 ? "text-red-400" : "text-gray-500";
-        const irrColor = q.irr >= 0.18 ? "text-green-400" : q.irr >= 0.12 ? "text-yellow-400" : q.irr > 0 ? "text-red-400" : "text-gray-500";
-        return `<div class="card p-4">
-          <div class="flex items-start justify-between">
-            <div class="cursor-pointer" data-deal-id="${esc(d.id)}">
-              <div class="font-semibold">${esc(d.name || "(untitled)")}</div>
-              <div class="text-xs text-gray-500 mt-1">${esc(d.asset_class || "—")} · ${esc(loc || "—")}</div>
-            </div>
-            <span class="pill pill-muted text-[10px]">${esc(d.status || "—")}</span>
-          </div>
-          <div class="grid grid-cols-3 gap-2 mt-3 text-xs">
-            <div class="kpi !p-2"><div class="label">Ask</div><div class="value text-base">${fmtMoney(q.ask)}</div></div>
-            <div class="kpi !p-2"><div class="label">NOI</div><div class="value text-base">${fmtMoney(q.noi)}</div></div>
-            <div class="kpi !p-2"><div class="label">Cap</div><div class="value text-base">${q.capPct.toFixed(2)}%</div></div>
-            <div class="kpi !p-2"><div class="label">$/Unit</div><div class="value text-base">${q.ppu ? fmtMoney(q.ppu) : "—"}</div></div>
-            <div class="kpi !p-2"><div class="label">DSCR</div><div class="value text-base ${dscrColor}">${q.dscr ? q.dscr.toFixed(2) : "—"}</div></div>
-            <div class="kpi !p-2"><div class="label">5-yr IRR</div><div class="value text-base ${irrColor}">${q.irr ? (q.irr * 100).toFixed(1) + "%" : "—"}</div></div>
-          </div>
-          <details class="mt-3">
-            <summary class="text-xs text-blue-400 cursor-pointer hover:text-blue-300">Sensitivity (value Δ% vs base)</summary>
-            <div class="mt-2">${sensitivityHtml(d)}</div>
-          </details>
-          <div class="mt-3 flex justify-between items-center text-xs">
-            <div class="text-gray-500">Y5 NOI: <b class="text-gray-200">${fmtMoney(q.noiY5)}</b> · Exit: <b class="text-gray-200">${fmtMoney(q.exitVal)}</b></div>
-            <button class="btn-ghost text-xs" data-deal-id="${esc(d.id)}">Open</button>
-          </div>
-        </div>`;
-      }).join("") : `<div class="card p-6 text-sm text-gray-500 col-span-2 text-center">Queue empty. Move a deal to "docs complete" once a T-12 lands.</div>`}
-    </div>
-  `;
-}
-
 function tplAdmin() {
   const tab = state.adminTab || "profile";
   const user = state.session?.user || {};
@@ -1865,31 +1786,48 @@ function tplAdmin() {
       </div>`;
 
     if (tab === "danger") return `
-      <div class="text-sm font-semibold mb-3 text-red-400">Danger zone</div>
+      <div class="text-sm font-semibold mb-1 text-red-400">Danger zone</div>
+      <div class="text-xs text-gray-500 mb-4">Destructive actions. Each one is reversible only by re-configuring. Proceed with care.</div>
       <div class="card p-4 border-red-900">
-        <div class="text-sm">Revoke all ClickUp tokens</div>
-        <div class="text-xs text-gray-500 mb-3">Disconnect ClickUp and clear stored credentials.</div>
-        <button class="btn-danger" data-adm-danger="revoke-clickup">Revoke ClickUp</button>
+        <div class="text-sm font-medium">Revoke all ClickUp tokens</div>
+        <div class="text-xs text-gray-500 mb-3">Disconnects ClickUp and clears stored credentials for your account.</div>
+        <button class="btn-danger" data-adm-danger="revoke-clickup" title="Disconnects your ClickUp integration. You'll need to re-paste your token to see deals again.">Revoke ClickUp</button>
       </div>
       <div class="card p-4 border-red-900 mt-3">
-        <div class="text-sm">Clear cached analytics</div>
-        <div class="text-xs text-gray-500 mb-3">Force next load to re-aggregate from ClickUp (slower first render).</div>
-        <button class="btn-danger" data-adm-danger="clear-analytics">Clear analytics</button>
+        <div class="text-sm font-medium">Clear cached analytics</div>
+        <div class="text-xs text-gray-500 mb-3">Forces next load to re-aggregate from ClickUp (slower first render, up-to-date numbers).</div>
+        <button class="btn-danger" data-adm-danger="clear-analytics" title="Wipes the cached analytics — next dashboard load will re-compute from ClickUp. Use if numbers look stale.">Clear cached analytics</button>
+      </div>
+      <div class="card p-4 border-red-900 mt-3">
+        <div class="text-sm font-medium">Reset cached UI data</div>
+        <div class="text-xs text-gray-500 mb-3">Clears the locally cached deals, brokers, and workspace selection from this browser. Your data on the server is untouched.</div>
+        <button class="btn-danger" data-adm-danger="clear-local" title="Wipes browser localStorage for BrokerFlow. Forces a fresh fetch on next load.">Clear local cache</button>
       </div>`;
 
     return "";
   };
 
+  const tabHints = {
+    profile: "Your display name, role, and identity shown to teammates",
+    clickup: "Connect your ClickUp account so BrokerFlow can read/write your deal + broker lists",
+    email: "SMTP credentials used to send Doc Chase emails from your own domain",
+    sms: "Twilio credentials used for SMS follow-ups",
+    ai: "Anthropic key for AI-powered Deep Intake on OMs and broker emails",
+    team: "Manage workspaces, sub-teams, members, roles, and invitations",
+    health: "Live status of every integration + raw session/config dump",
+    danger: "Destructive actions — revoke tokens, clear caches",
+  };
+
   return `
-    <div class="mb-4 flex items-start justify-between">
+    <div class="mb-5 flex items-start justify-between">
       <div>
-        <div class="text-2xl font-bold">Admin</div>
-        <div class="text-xs text-gray-500">Profile · Integrations · Health · Danger zone</div>
+        <div class="text-2xl font-bold">Settings</div>
+        <div class="text-xs text-gray-500 mt-1">Manage your profile, integrations, team, and account preferences.</div>
       </div>
     </div>
     <div class="card p-0 overflow-hidden">
       <div class="flex border-b border-gray-800 bg-[#0d1220] overflow-x-auto">
-        ${tabs.map(([id, label]) => `<div class="tab ${tab === id ? "active" : ""}" data-adm-tab="${id}">${esc(label)}</div>`).join("")}
+        ${tabs.map(([id, label]) => `<div class="tab ${tab === id ? "active" : ""}" data-adm-tab="${id}" title="${esc(tabHints[id] || "")}">${esc(label)}</div>`).join("")}
       </div>
       <div class="p-5">${body()}</div>
     </div>
@@ -2206,12 +2144,27 @@ function renderWorkspaceContext() {
     state.subteams = [];
     state.subteamMembers = [];
     state.subteamRoles = [];
+    // Workspace switch — everything else (deals/brokers/touchpoints) is
+    // workspace-scoped on the backend, so drop the in-memory + persisted
+    // entity cache and force a fresh load against the new workspace.
+    state.deals = [];
+    state.brokers = [];
+    state.touchpoints = [];
+    state.analytics = null;
+    state.graph = null;
+    state.reports = null;
+    state.heatact = null;
+    state.analyticsFailed = state.graphFailed = state.reportsFailed = state.heatactFailed = false;
+    try { localStorage.removeItem(ENTITY_CACHE_KEY); } catch (_) {}
     await loadActiveTeamData();
     // Auto-pick "team1" (or keep null) for the newly-selected workspace.
     pickDefaultSubteam();
     if (state.activeSubteamId) await loadActiveSubteamData();
     saveWsContext();
     renderWorkspaceContext();
+    // Refresh dashboard data (deals/brokers/analytics) for the new workspace.
+    // Fires in the background so the UI stays responsive.
+    try { refreshDashboard(); } catch (_) {}
     renderActiveView();
   };
 
@@ -2224,6 +2177,24 @@ function renderWorkspaceContext() {
     renderWorkspaceContext();
     renderActiveView();
   };
+
+  // Pencil (rename) buttons: visible only when the user has permission to rename.
+  // Workspace rename: owner or user with admin permission.
+  // Sub-team rename: same (workspace admin always can; sub-team admin also OK).
+  const active = teams.find(t => t.id === activeWs);
+  const perms = (active && active.permissions) || {};
+  const canRenameWs = !!active && (active.is_owner || perms.admin);
+  const wsBtn = document.getElementById("ws-rename-btn");
+  if (wsBtn) {
+    wsBtn.style.display = canRenameWs ? "" : "none";
+    wsBtn.onclick = openTeamRename;
+  }
+  const stBtn = document.getElementById("st-rename-btn");
+  if (stBtn) {
+    const canRenameSt = !!activeSt && canRenameWs;
+    stBtn.style.display = canRenameSt ? "" : "none";
+    stBtn.onclick = openSubteamRename;
+  }
 }
 
 async function loadActiveTeamData() {
@@ -2664,27 +2635,71 @@ function openTeamCreate() {
 function openTeamRename() {
   const t = state.teams.find(x => x.id === state.activeTeamId);
   if (!t) return;
-  $("compose-title").textContent = "Rename team";
+  $("compose-title").textContent = "Rename workspace";
   $("compose-body").innerHTML = `
     <div class="space-y-3">
       <div>
-        <label class="text-xs text-gray-500">Team name</label>
+        <label class="text-xs text-gray-500">Workspace name</label>
         <input id="rt-name" class="input" value="${esc(t.name)}" />
+        <div class="text-[11px] text-gray-500 mt-1">Visible to every member of this workspace.</div>
       </div>
       <div class="flex gap-2 justify-end">
-        <button id="rt-cancel" class="btn-ghost">Cancel</button>
-        <button id="rt-save" class="btn">Save</button>
+        <button id="rt-cancel" class="btn-ghost" title="Discard changes">Cancel</button>
+        <button id="rt-save" class="btn" title="Save new workspace name">Save</button>
       </div>
     </div>`;
   show("compose-modal");
+  setTimeout(() => { const el = $("rt-name"); if (el) { el.focus(); el.select(); } }, 0);
   $("rt-cancel").onclick = () => hide("compose-modal");
   $("rt-save").onclick = async () => {
     const name = $("rt-name").value.trim();
     if (!name) return;
     try {
       await apiJson("PATCH", `/api/v2/teams/${encodeURIComponent(t.id)}`, { name });
-      hide("compose-modal"); toast("Renamed");
-      await loadTeams(); renderActiveView();
+      // Optimistic: patch local state so the sidebar updates immediately,
+      // then reconcile in background.
+      const idx = state.teams.findIndex(x => x.id === t.id);
+      if (idx >= 0) state.teams[idx] = { ...state.teams[idx], name };
+      saveEntityCache({ teams: state.teams });
+      renderWorkspaceContext();
+      hide("compose-modal"); toast("Workspace renamed");
+      loadTeams().then(() => renderActiveView()).catch(() => {});
+    } catch (e) { toast("Rename failed: " + e.message, "err"); }
+  };
+}
+
+function openSubteamRename() {
+  const wsId = state.activeTeamId;
+  const stId = state.activeSubteamId;
+  if (!wsId || !stId) return;
+  const s = (state.subteams || []).find(x => x.id === stId);
+  if (!s) return;
+  $("compose-title").textContent = "Rename team";
+  $("compose-body").innerHTML = `
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-500">Team name</label>
+        <input id="rs-name" class="input" value="${esc(s.name)}" />
+        <div class="text-[11px] text-gray-500 mt-1">Rename a sub-team inside this workspace.</div>
+      </div>
+      <div class="flex gap-2 justify-end">
+        <button id="rs-cancel" class="btn-ghost" title="Discard changes">Cancel</button>
+        <button id="rs-save" class="btn" title="Save new team name">Save</button>
+      </div>
+    </div>`;
+  show("compose-modal");
+  setTimeout(() => { const el = $("rs-name"); if (el) { el.focus(); el.select(); } }, 0);
+  $("rs-cancel").onclick = () => hide("compose-modal");
+  $("rs-save").onclick = async () => {
+    const name = $("rs-name").value.trim();
+    if (!name) return;
+    try {
+      await apiJson("PATCH", `/api/v2/workspaces/${encodeURIComponent(wsId)}/teams/${encodeURIComponent(stId)}`, { name });
+      const idx = (state.subteams || []).findIndex(x => x.id === stId);
+      if (idx >= 0) state.subteams[idx] = { ...state.subteams[idx], name };
+      renderWorkspaceContext();
+      hide("compose-modal"); toast("Team renamed");
+      loadActiveTeamData().then(() => renderActiveView()).catch(() => {});
     } catch (e) { toast("Rename failed: " + e.message, "err"); }
   };
 }
@@ -3018,7 +3033,6 @@ function wireViewHandlers() {
   // Reports: exports
   const expCsv = $("rpt-export-csv"); if (expCsv) expCsv.onclick = () => exportReport("csv");
   const expJson = $("rpt-export-json"); if (expJson) expJson.onclick = () => exportReport("json");
-  const uwExp = $("uw-export"); if (uwExp) uwExp.onclick = () => exportUnderwriting();
 
   // Map: state row → pan
   document.querySelectorAll("[data-state]").forEach(el => el.onclick = () => focusStateOnMap(el.dataset.state));
@@ -3912,25 +3926,6 @@ function exportReport(fmt) {
   downloadBlob(new Blob([csv], { type: "text/csv" }), `jp-brokerflow-leaderboard-${new Date().toISOString().slice(0,10)}.csv`);
 }
 
-function exportUnderwriting() {
-  const queue = state.deals.filter(d => { const s = (d.status || "").toLowerCase(); return s === "docs complete" || s === "underwriting"; });
-  const rows = [["deal","asset","location","ask","noi","cap_pct","ppu","dscr","irr_pct","exit_val"]];
-  queue.forEach(d => {
-    const ask = Number(d.ask_price) || 0, noi = Number(d.noi) || 0, units = Number(d.units) || 0;
-    const capPct = Number((d.cap_rate || "").toString().replace("%","")) || (ask && noi ? (noi/ask)*100 : 0);
-    const ppu = units && ask ? ask/units : 0;
-    const loan = ask*0.7, r = 0.065/12, n = 360;
-    const monthly = loan && r ? (loan*r)/(1-Math.pow(1+r,-n)) : 0;
-    const dscr = monthly*12 ? noi/(monthly*12) : 0;
-    const noiY5 = noi*Math.pow(1.03,5);
-    const exitCap = (capPct+0.5)/100;
-    const exitVal = exitCap ? noiY5/exitCap : 0;
-    rows.push([d.name||"", d.asset_class||"", [d.city,d.state].filter(Boolean).join(", "), ask, noi, capPct.toFixed(2), ppu.toFixed(0), dscr.toFixed(2), "", exitVal.toFixed(0)]);
-  });
-  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
-  downloadBlob(new Blob([csv], { type: "text/csv" }), `jp-brokerflow-uw-queue-${new Date().toISOString().slice(0,10)}.csv`);
-}
-
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -3996,6 +3991,19 @@ async function loadEnvHealth() {
 }
 
 async function runAdminDanger(action) {
+  // Client-side action — clears localStorage and re-fetches fresh data
+  if (action === "clear-local") {
+    if (!confirm("Clear local cache? This will wipe cached deals/brokers/workspace selection from this browser. Your server data is untouched.")) return;
+    try {
+      localStorage.removeItem(ENTITY_CACHE_KEY);
+      localStorage.removeItem(WS_CONTEXT_KEY);
+      toast("Local cache cleared");
+      state.deals = []; state.brokers = [];
+      await refreshDashboard();
+      await loadTeams();
+    } catch (e) { toast(`Failed: ${e.message}`, "err"); }
+    return;
+  }
   if (!confirm(`Are you sure? This will: ${action}`)) return;
   try {
     await apiJson("POST", "/api/v2/admin/danger", { action });
