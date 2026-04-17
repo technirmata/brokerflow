@@ -1,4 +1,4 @@
-name: BrokerFlow keepalive
+name: JP BrokerFlow keepalive
 
 # Pings the live Render service every 10 min so it never sleeps.
 # Render free tier spins down after 15 min idle; waking from cold = 50s delay.
@@ -6,8 +6,8 @@ name: BrokerFlow keepalive
 
 on:
   schedule:
-    - cron: "*/10 * * * *"
-  workflow_dispatch:
+    - cron: "*/10 * * * *"   # every 10 minutes
+  workflow_dispatch:          # allow manual run
 
 jobs:
   ping:
