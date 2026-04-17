@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>BrokerFlow</title>
+<title>JP BrokerFlow</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -68,7 +68,7 @@
 <header id="topbar" class="hidden border-b border-gray-800">
   <div class="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
     <div class="flex items-center gap-3">
-      <div class="text-xl font-bold tracking-tight">BrokerFlow</div>
+      <div class="text-xl font-bold tracking-tight">JP BrokerFlow</div>
       <span id="user-email" class="text-xs text-gray-500"></span>
     </div>
     <div class="flex items-center gap-2">
@@ -80,7 +80,7 @@
 
 <!-- =================== BOOT / LOADING =================== -->
 <section id="view-boot" class="max-w-xl mx-auto px-6 pt-24 text-center">
-  <div class="text-3xl font-bold mb-2">BrokerFlow</div>
+  <div class="text-3xl font-bold mb-2">JP BrokerFlow</div>
   <div class="text-gray-500 text-sm mb-6">Broker deal tracking + follow-up automation</div>
   <div class="spin mx-auto"></div>
   <div class="text-xs text-gray-600 mt-3">Loading…</div>
@@ -106,7 +106,7 @@ SUPABASE_JWT_SECRET=your-project-jwt-secret</pre>
 <!-- =================== LANDING / AUTH =================== -->
 <section id="view-auth" class="hidden max-w-md mx-auto px-6 pt-20">
   <div class="card p-8">
-    <div class="text-2xl font-bold mb-1">Welcome to BrokerFlow</div>
+    <div class="text-2xl font-bold mb-1">Welcome to JP BrokerFlow</div>
     <div class="text-gray-400 text-sm mb-6">Sign in to track deals, brokers, and follow-ups.</div>
 
     <div class="flex gap-2 mb-5">
@@ -176,9 +176,9 @@ SUPABASE_JWT_SECRET=your-project-jwt-secret</pre>
       <select id="cu-workspace" class="input mt-1 mb-3"></select>
       <button id="cu-load-spaces" class="btn-ghost">Load spaces</button>
       <div id="cu-space-picker" class="hidden mt-3">
-        <label class="text-xs text-gray-500">Space (where BrokerFlow folder will live)</label>
+        <label class="text-xs text-gray-500">Space (where JP BrokerFlow folder will live)</label>
         <select id="cu-space" class="input mt-1 mb-3"></select>
-        <button id="cu-create" class="btn">Create BrokerFlow folder + lists</button>
+        <button id="cu-create" class="btn">Create JP BrokerFlow folder + lists</button>
       </div>
       <div id="cu-create-result" class="text-xs mt-3"></div>
     </div>
@@ -192,7 +192,7 @@ SUPABASE_JWT_SECRET=your-project-jwt-secret</pre>
   <div id="step-2" class="card p-6 wizard-step hidden">
     <div class="text-lg font-semibold mb-1">Step 2 · Email (optional)</div>
     <div class="text-gray-400 text-sm mb-4">
-      Connect any SMTP account so BrokerFlow can send warm follow-ups on your behalf.
+      Connect any SMTP account so JP BrokerFlow can send warm follow-ups on your behalf.
       For Gmail, create an
       <a target="_blank" rel="noopener" class="text-blue-400 underline"
          href="https://myaccount.google.com/apppasswords">app password</a>.
@@ -354,7 +354,7 @@ SUPABASE_JWT_SECRET=your-project-jwt-secret</pre>
 
 <script type="module">
 /* ==========================================================================
-   BrokerFlow frontend SPA.
+   JP BrokerFlow frontend SPA.
    Runs entirely in the browser. Uses Supabase auth for session management
    and calls the FastAPI /api/v2 endpoints with the user's JWT.
    ========================================================================== */
@@ -3242,7 +3242,7 @@ function exportReport(fmt) {
   const a = state.analytics;
   if (fmt === "json") {
     const blob = new Blob([JSON.stringify({ analytics: a, reports: r }, null, 2)], { type: "application/json" });
-    downloadBlob(blob, `brokerflow-reports-${new Date().toISOString().slice(0,10)}.json`);
+    downloadBlob(blob, `jp-brokerflow-reports-${new Date().toISOString().slice(0,10)}.json`);
     return;
   }
   const rows = [["broker","firm","total","active","closed","docs_in_rate","close_rate","score"]];
@@ -3250,7 +3250,7 @@ function exportReport(fmt) {
     s.name || "", s.firm || "", s.total ?? s.deal_count ?? 0, s.active ?? "", s.closed ?? "", s.docs_in_rate ?? "", s.close_rate ?? s.conversion_pct ?? "", s.score ?? ""
   ]));
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
-  downloadBlob(new Blob([csv], { type: "text/csv" }), `brokerflow-leaderboard-${new Date().toISOString().slice(0,10)}.csv`);
+  downloadBlob(new Blob([csv], { type: "text/csv" }), `jp-brokerflow-leaderboard-${new Date().toISOString().slice(0,10)}.csv`);
 }
 
 function exportUnderwriting() {
@@ -3269,7 +3269,7 @@ function exportUnderwriting() {
     rows.push([d.name||"", d.asset_class||"", [d.city,d.state].filter(Boolean).join(", "), ask, noi, capPct.toFixed(2), ppu.toFixed(0), dscr.toFixed(2), "", exitVal.toFixed(0)]);
   });
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
-  downloadBlob(new Blob([csv], { type: "text/csv" }), `brokerflow-uw-queue-${new Date().toISOString().slice(0,10)}.csv`);
+  downloadBlob(new Blob([csv], { type: "text/csv" }), `jp-brokerflow-uw-queue-${new Date().toISOString().slice(0,10)}.csv`);
 }
 
 function downloadBlob(blob, filename) {
