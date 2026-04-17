@@ -295,13 +295,15 @@ SUPABASE_JWT_SECRET=your-project-jwt-secret</pre>
 
     <!-- Sidebar -->
     <aside class="w-56 border-r border-gray-800 py-4 px-3 shrink-0">
-      <div class="text-xs uppercase tracking-wider text-gray-500 px-2 mb-2">Role</div>
-      <select id="role-picker" class="input text-sm mb-4">
-        <option value="Director">Director of Acquisitions</option>
-        <option value="VP">VP Acquisitions</option>
-        <option value="Analyst">Acquisitions Analyst</option>
-        <option value="IC">Investment Committee</option>
-      </select>
+      <!-- Workspace (heading) + Team (subheading) context switcher -->
+      <div id="ws-context" class="px-2 mb-4">
+        <select id="topbar-workspace" class="w-full bg-gray-900/60 border border-gray-800 hover:border-gray-600 focus:border-blue-500 focus:outline-none rounded px-2 py-1.5 text-sm font-semibold text-gray-100 cursor-pointer mb-1.5">
+          <option>(loading…)</option>
+        </select>
+        <select id="topbar-subteam" class="w-full bg-transparent border border-transparent hover:border-gray-700 focus:border-blue-500 focus:outline-none rounded px-2 py-1 text-[11px] text-gray-400 cursor-pointer">
+          <option>—</option>
+        </select>
+      </div>
       <div class="text-xs uppercase tracking-wider text-gray-500 px-2 mb-2">Navigation</div>
       <nav id="nav" class="space-y-1">
         <!-- Populated by JS -->
@@ -746,7 +748,7 @@ function switchView(name) {
   renderActiveView();
 }
 
-$("role-picker").onchange = (e) => { state.role = e.target.value; renderActiveView(); };
+// role-picker removed — state.role stays "Director" as default for dashboard brief copy
 $("btn-refresh").onclick = refreshDashboard;
 $("drawer-close").onclick = () => hide("detail-drawer");
 
@@ -2023,6 +2025,69 @@ async function loadTeams() {
       state.teamsBlocked = "SUPABASE_SERVICE_ROLE_KEY not set on server. Add it in Render → Environment to enable teams.";
     }
   }
+  renderWorkspaceContext();
+}
+
+/* ---------- Sidebar workspace/team heading+subheading switcher ---------- */
+function renderWorkspaceContext() {
+  const wsSel = document.getElementById("topbar-workspace");
+  const stSel = document.getElementById("topbar-subteam");
+  if (!wsSel || !stSel) return;
+
+  const teams = state.teams || [];
+  const subteams = state.subteams || [];
+  const activeWs = state.activeTeamId;
+  const activeSt = state.activeSubteamId;
+
+  // Workspace select (heading)
+  if (!teams.length) {
+    wsSel.innerHTML = `<option value="__new__">+ Create workspace</option>`;
+  } else {
+    wsSel.innerHTML =
+      teams.map(t => `<option value="${esc(t.id)}" ${t.id === activeWs ? "selected" : ""}>${esc(t.name)}${t.is_owner ? " · Owner" : ""}</option>`).join("") +
+      `<option disabled>──────────</option>` +
+      `<option value="__new__">+ New workspace</option>`;
+  }
+
+  // Sub-team select (subheading)
+  if (!activeWs) {
+    stSel.innerHTML = `<option>—</option>`;
+    stSel.disabled = true;
+  } else if (!subteams.length) {
+    stSel.innerHTML = `<option value="">No teams yet</option><option value="__new__">+ New team</option>`;
+    stSel.disabled = false;
+  } else {
+    stSel.innerHTML =
+      `<option value="">All teams in workspace</option>` +
+      subteams.map(s => `<option value="${esc(s.id)}" ${s.id === activeSt ? "selected" : ""}>${esc(s.name)}</option>`).join("") +
+      `<option disabled>──────────</option>` +
+      `<option value="__new__">+ New team</option>`;
+    stSel.disabled = false;
+  }
+
+  // Bind handlers (onchange overwrites each render — safe)
+  wsSel.onchange = async (e) => {
+    const v = e.target.value;
+    if (v === "__new__") { renderWorkspaceContext(); openTeamCreate(); return; }
+    if (v === state.activeTeamId) return;
+    state.activeTeamId = v;
+    state.activeSubteamId = null;
+    state.subteams = [];
+    state.subteamMembers = [];
+    state.subteamRoles = [];
+    await loadActiveTeamData();
+    renderWorkspaceContext();
+    renderActiveView();
+  };
+
+  stSel.onchange = async (e) => {
+    const v = e.target.value;
+    if (v === "__new__") { renderWorkspaceContext(); openSubteamCreate(); return; }
+    state.activeSubteamId = v || null;
+    if (v) await loadActiveSubteamData();
+    renderWorkspaceContext();
+    renderActiveView();
+  };
 }
 
 async function loadActiveTeamData() {
@@ -2039,6 +2104,7 @@ async function loadActiveTeamData() {
     state.teamRoles = r.roles || [];
     state.teamInvites = i.invitations || [];
     state.subteams = s.teams || [];
+    renderWorkspaceContext();
   } catch (e) {
     toast("Failed to load workspace: " + e.message, "err");
   }
