@@ -1,9 +1,9 @@
-# BrokerFlow — First-Run Setup
+# JP BrokerFlow — First-Run Setup
 
-BrokerFlow is a multi-tenant deal-tracking dashboard for real estate
+JP BrokerFlow is a multi-tenant deal-tracking dashboard for real estate
 acquisitions. Each user signs up with email + password (or Google, or as a
 guest), pastes their own ClickUp / SMTP / Twilio / Anthropic keys in-app, and
-BrokerFlow stores per-user config in Supabase with row-level security.
+JP BrokerFlow stores per-user config in Supabase with row-level security.
 
 This document walks you through a one-time setup so the backend knows which
 Supabase project to use.
@@ -75,7 +75,7 @@ in. To skip that in development:
 1. Open the app — you'll land on the sign-in page.
 2. Create an account (or continue as guest).
 3. Paste your ClickUp personal token, pick a workspace + space, and let
-   BrokerFlow create a `BrokerFlow` folder with 5 lists:
+   JP BrokerFlow create a `JP BrokerFlow` folder with 5 lists:
    `Active Deals`, `Broker Directory`, `Follow-ups Queue`,
    `Message Templates`, `Touchpoints Log`.
 4. Add SMTP creds if you want to send email follow-ups (Gmail users: create
