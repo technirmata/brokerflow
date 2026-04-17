@@ -209,6 +209,12 @@ async def health():
         "workspace_id": WS_ID,
     }
 
+@app.get("/health")
+async def health_lite():
+    """Lightweight keepalive target — no deps, no downstream calls.
+    Used by GitHub Actions cron every 10 min to prevent Render free-tier cold start."""
+    return {"ok": True}
+
 @app.get("/api/meta")
 async def meta():
     return {
