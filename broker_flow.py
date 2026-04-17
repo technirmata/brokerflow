@@ -199,6 +199,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount multi-tenant v2 API (Supabase-backed, per-user config)
+try:
+    from v2_api import router as v2_router
+    app.include_router(v2_router)
+except Exception as _v2_import_err:  # noqa: BLE001
+    print(f"WARNING: v2 API not mounted: {_v2_import_err}")
+
 # ---------- Meta / health ----------
 
 @app.get("/api/health")
@@ -493,11 +500,23 @@ async def seed_sample_brokers():
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    html = HERE / "BrokerFlow_Master_Dashboard_v3.html"
+    # New multi-tenant SPA (auth → wizard → dashboard).
+    # Falls back to legacy single-tenant dashboard if index.html missing.
+    spa = HERE / "index.html"
+    legacy = HERE / "BrokerFlow_Master_Dashboard_v3.html"
+    html = spa if spa.exists() else legacy
     if not html.exists():
         return JSONResponse({"error": "dashboard HTML not found", "path": str(html)}, status_code=404)
-    # Read as bytes and return with no preset Content-Length — Starlette computes from actual payload.
-    # Avoids h11 "Too much data for declared Content-Length" seen with FileResponse on some setups.
+    data = html.read_bytes()
+    return Response(content=data, media_type="text/html; charset=utf-8")
+
+@app.get("/legacy", response_class=HTMLResponse)
+async def legacy_dashboard():
+    """Legacy single-tenant dashboard (CLICKUP_TOKEN env var, no auth).
+    Kept for backward compatibility during v2 rollout."""
+    html = HERE / "BrokerFlow_Master_Dashboard_v3.html"
+    if not html.exists():
+        return JSONResponse({"error": "legacy dashboard HTML not found"}, status_code=404)
     data = html.read_bytes()
     return Response(content=data, media_type="text/html; charset=utf-8")
 
@@ -519,5 +538,3 @@ if __name__ == "__main__":
         except Exception:
             pass
     uvicorn.run(app, host=host, port=port, log_level="info")
-
-# auto-deploy connectivity test

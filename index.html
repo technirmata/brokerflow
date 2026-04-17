@@ -1,0 +1,993 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>BrokerFlow</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+  window.__createSupabaseClient = createClient;
+</script>
+<style>
+  html, body { background: #0b0f17; color: #e5e7eb; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; }
+  .btn { background: #2563eb; color: white; padding: 8px 14px; border-radius: 8px; font-weight: 600; }
+  .btn:hover { background: #1d4ed8; }
+  .btn-ghost { background: transparent; color: #9ca3af; padding: 8px 12px; border-radius: 8px; border: 1px solid #1f2937; }
+  .btn-ghost:hover { color: #e5e7eb; background: #111827; }
+  .btn-danger { background: #dc2626; color: white; padding: 6px 10px; border-radius: 6px; font-size: 12px; }
+  .input { background: #0b0f17; border: 1px solid #1f2937; color: #e5e7eb; padding: 8px 12px; border-radius: 8px; width: 100%; }
+  .input:focus { outline: 2px solid #2563eb; border-color: #2563eb; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .pill-ok { background: #052e16; color: #4ade80; }
+  .pill-bad { background: #450a0a; color: #f87171; }
+  .pill-warn { background: #422006; color: #fbbf24; }
+  .pill-muted { background: #1f2937; color: #9ca3af; }
+  .spin { border: 2px solid #1f2937; border-top-color: #2563eb; border-radius: 50%; width: 18px; height: 18px; animation: spin 0.8s linear infinite; display: inline-block; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .step-dot { width: 28px; height: 28px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+  .step-dot.active { background: #2563eb; color: white; }
+  .step-dot.done { background: #16a34a; color: white; }
+  .step-dot.pending { background: #1f2937; color: #6b7280; }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- =================== TOP BAR =================== -->
+<header id="topbar" class="hidden border-b border-gray-800">
+  <div class="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="text-xl font-bold tracking-tight">BrokerFlow</div>
+      <span id="user-email" class="text-xs text-gray-500"></span>
+    </div>
+    <div class="flex items-center gap-2">
+      <button id="btn-settings" class="btn-ghost text-sm">Settings</button>
+      <button id="btn-logout" class="btn-ghost text-sm">Sign out</button>
+    </div>
+  </div>
+</header>
+
+<!-- =================== BOOT / LOADING =================== -->
+<section id="view-boot" class="max-w-xl mx-auto px-6 pt-24 text-center">
+  <div class="text-3xl font-bold mb-2">BrokerFlow</div>
+  <div class="text-gray-500 text-sm mb-6">Broker deal tracking + follow-up automation</div>
+  <div class="spin mx-auto"></div>
+  <div class="text-xs text-gray-600 mt-3">Loading…</div>
+</section>
+
+<!-- =================== NOT CONFIGURED =================== -->
+<section id="view-not-configured" class="hidden max-w-xl mx-auto px-6 pt-20">
+  <div class="card p-8">
+    <div class="text-2xl font-bold mb-2">Server not configured</div>
+    <div class="text-gray-400 text-sm mb-4">
+      The backend needs Supabase credentials to enable multi-user accounts. Set these environment
+      variables on your Render service and redeploy:
+    </div>
+    <pre class="bg-black p-3 rounded text-xs text-green-300 overflow-auto">SUPABASE_URL=https://xxxxx.supabase.co
+SUPABASE_ANON_KEY=eyJhbGciOi...
+SUPABASE_JWT_SECRET=your-project-jwt-secret</pre>
+    <div class="text-xs text-gray-500 mt-3">
+      See <code>SETUP.md</code> in the repo for the full first-run walkthrough.
+    </div>
+  </div>
+</section>
+
+<!-- =================== LANDING / AUTH =================== -->
+<section id="view-auth" class="hidden max-w-md mx-auto px-6 pt-20">
+  <div class="card p-8">
+    <div class="text-2xl font-bold mb-1">Welcome to BrokerFlow</div>
+    <div class="text-gray-400 text-sm mb-6">Sign in to track deals, brokers, and follow-ups.</div>
+
+    <div class="flex gap-2 mb-5">
+      <button id="tab-login" class="flex-1 btn">Sign in</button>
+      <button id="tab-signup" class="flex-1 btn-ghost">Sign up</button>
+    </div>
+
+    <form id="form-auth" class="space-y-3">
+      <input id="auth-email" class="input" placeholder="Email" type="email" autocomplete="email" required />
+      <input id="auth-password" class="input" placeholder="Password" type="password" autocomplete="current-password" minlength="6" required />
+      <button class="btn w-full" type="submit"><span id="auth-submit-label">Sign in</span></button>
+    </form>
+
+    <div id="auth-error" class="hidden text-red-400 text-sm mt-3"></div>
+
+    <div class="my-5 flex items-center gap-3">
+      <div class="flex-1 h-px bg-gray-800"></div>
+      <div class="text-xs text-gray-600">or</div>
+      <div class="flex-1 h-px bg-gray-800"></div>
+    </div>
+
+    <button id="btn-google" class="btn-ghost w-full mb-2">Continue with Google</button>
+    <button id="btn-guest" class="btn-ghost w-full">Continue as guest</button>
+
+    <div class="text-xs text-gray-600 mt-4 text-center">
+      Guest accounts are temporary and lose data if you clear cookies.
+    </div>
+  </div>
+</section>
+
+<!-- =================== WIZARD =================== -->
+<section id="view-wizard" class="hidden max-w-3xl mx-auto px-6 py-10">
+  <div class="flex items-center justify-between mb-1">
+    <div class="text-2xl font-bold">Setup</div>
+    <button id="wiz-skip" class="btn-ghost text-xs">Skip for now</button>
+  </div>
+  <div class="text-gray-500 text-sm mb-6">Connect your tools. You can always change these in Settings.</div>
+
+  <!-- Step dots -->
+  <div class="flex items-center gap-2 mb-8">
+    <div id="dot-1" class="step-dot active">1</div>
+    <div class="flex-1 h-px bg-gray-800"></div>
+    <div id="dot-2" class="step-dot pending">2</div>
+    <div class="flex-1 h-px bg-gray-800"></div>
+    <div id="dot-3" class="step-dot pending">3</div>
+    <div class="flex-1 h-px bg-gray-800"></div>
+    <div id="dot-4" class="step-dot pending">4</div>
+    <div class="flex-1 h-px bg-gray-800"></div>
+    <div id="dot-5" class="step-dot pending">5</div>
+  </div>
+
+  <!-- Step 1: ClickUp -->
+  <div id="step-1" class="card p-6 wizard-step">
+    <div class="text-lg font-semibold mb-1">Step 1 · Connect ClickUp</div>
+    <div class="text-gray-400 text-sm mb-4">
+      Paste your ClickUp personal API token. Get one at
+      <a target="_blank" rel="noopener" class="text-blue-400 underline"
+         href="https://app.clickup.com/settings/apps">app.clickup.com/settings/apps</a>.
+    </div>
+    <label class="text-xs text-gray-500">ClickUp API token</label>
+    <input id="cu-token" class="input mt-1 mb-3" placeholder="pk_xxxxxxxxxxxxxxxx" />
+    <button id="cu-test" class="btn">Test & load workspaces</button>
+    <div id="cu-test-result" class="text-xs mt-3"></div>
+
+    <div id="cu-workspace-picker" class="hidden mt-4">
+      <label class="text-xs text-gray-500">Workspace</label>
+      <select id="cu-workspace" class="input mt-1 mb-3"></select>
+      <button id="cu-load-spaces" class="btn-ghost">Load spaces</button>
+      <div id="cu-space-picker" class="hidden mt-3">
+        <label class="text-xs text-gray-500">Space (where BrokerFlow folder will live)</label>
+        <select id="cu-space" class="input mt-1 mb-3"></select>
+        <button id="cu-create" class="btn">Create BrokerFlow folder + lists</button>
+      </div>
+      <div id="cu-create-result" class="text-xs mt-3"></div>
+    </div>
+
+    <div class="mt-6 flex justify-end">
+      <button class="btn wizard-next" data-next="2" disabled id="cu-next">Next →</button>
+    </div>
+  </div>
+
+  <!-- Step 2: Email -->
+  <div id="step-2" class="card p-6 wizard-step hidden">
+    <div class="text-lg font-semibold mb-1">Step 2 · Email (optional)</div>
+    <div class="text-gray-400 text-sm mb-4">
+      Connect any SMTP account so BrokerFlow can send warm follow-ups on your behalf.
+      For Gmail, create an
+      <a target="_blank" rel="noopener" class="text-blue-400 underline"
+         href="https://myaccount.google.com/apppasswords">app password</a>.
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div><label class="text-xs text-gray-500">SMTP host</label>
+        <input id="smtp-host" class="input mt-1" placeholder="smtp.gmail.com" />
+      </div>
+      <div><label class="text-xs text-gray-500">Port</label>
+        <input id="smtp-port" class="input mt-1" placeholder="587" />
+      </div>
+      <div><label class="text-xs text-gray-500">Username</label>
+        <input id="smtp-user" class="input mt-1" placeholder="you@yourdomain.com" />
+      </div>
+      <div><label class="text-xs text-gray-500">Password / App password</label>
+        <input id="smtp-pass" class="input mt-1" type="password" placeholder="••••••••" />
+      </div>
+      <div class="col-span-2"><label class="text-xs text-gray-500">From address (shown to recipients)</label>
+        <input id="smtp-from" class="input mt-1" placeholder="Parth Patel &lt;you@yourdomain.com&gt;" />
+      </div>
+    </div>
+    <div class="mt-3 flex gap-2">
+      <button id="smtp-test" class="btn-ghost">Test connection</button>
+      <button id="smtp-save" class="btn">Save</button>
+    </div>
+    <div id="smtp-result" class="text-xs mt-3"></div>
+
+    <div class="mt-6 flex justify-between">
+      <button class="btn-ghost wizard-next" data-next="1">← Back</button>
+      <button class="btn wizard-next" data-next="3">Next →</button>
+    </div>
+  </div>
+
+  <!-- Step 3: SMS (Twilio) -->
+  <div id="step-3" class="card p-6 wizard-step hidden">
+    <div class="text-lg font-semibold mb-1">Step 3 · SMS (optional)</div>
+    <div class="text-gray-400 text-sm mb-4">
+      Add Twilio credentials to send broker reminder texts.
+      <a target="_blank" rel="noopener" class="text-blue-400 underline" href="https://console.twilio.com/">console.twilio.com</a>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div><label class="text-xs text-gray-500">Account SID</label>
+        <input id="tw-sid" class="input mt-1" placeholder="ACxxxxxxxx..." />
+      </div>
+      <div><label class="text-xs text-gray-500">Auth token</label>
+        <input id="tw-token" class="input mt-1" type="password" placeholder="••••••••" />
+      </div>
+      <div class="col-span-2"><label class="text-xs text-gray-500">From number (E.164)</label>
+        <input id="tw-from" class="input mt-1" placeholder="+15551234567" />
+      </div>
+    </div>
+    <div class="mt-3 flex gap-2">
+      <button id="tw-test" class="btn-ghost">Test credentials</button>
+      <button id="tw-save" class="btn">Save</button>
+    </div>
+    <div id="tw-result" class="text-xs mt-3"></div>
+
+    <div class="mt-6 flex justify-between">
+      <button class="btn-ghost wizard-next" data-next="2">← Back</button>
+      <button class="btn wizard-next" data-next="4">Next →</button>
+    </div>
+  </div>
+
+  <!-- Step 4: AI (Anthropic) -->
+  <div id="step-4" class="card p-6 wizard-step hidden">
+    <div class="text-lg font-semibold mb-1">Step 4 · AI drafts (optional)</div>
+    <div class="text-gray-400 text-sm mb-4">
+      Add an Anthropic API key so Claude can draft warm follow-ups tuned to your relationship history.
+      Get one at
+      <a target="_blank" rel="noopener" class="text-blue-400 underline" href="https://console.anthropic.com/settings/keys">console.anthropic.com</a>.
+    </div>
+    <label class="text-xs text-gray-500">Anthropic API key</label>
+    <input id="an-key" class="input mt-1 mb-3" type="password" placeholder="sk-ant-..." />
+    <div class="flex gap-2">
+      <button id="an-test" class="btn-ghost">Test key</button>
+      <button id="an-save" class="btn">Save</button>
+    </div>
+    <div id="an-result" class="text-xs mt-3"></div>
+
+    <div class="mt-6 flex justify-between">
+      <button class="btn-ghost wizard-next" data-next="3">← Back</button>
+      <button class="btn wizard-next" data-next="5">Next →</button>
+    </div>
+  </div>
+
+  <!-- Step 5: Done -->
+  <div id="step-5" class="card p-6 wizard-step hidden text-center">
+    <div class="text-4xl mb-2">✓</div>
+    <div class="text-xl font-semibold mb-2">You're set up</div>
+    <div class="text-gray-400 text-sm mb-6">
+      Head to the dashboard to see your deals, log touchpoints, and draft follow-ups.
+    </div>
+    <button id="wiz-finish" class="btn">Open dashboard</button>
+  </div>
+</section>
+
+<!-- =================== DASHBOARD =================== -->
+<section id="view-dashboard" class="hidden max-w-7xl mx-auto px-6 py-6">
+  <div class="grid grid-cols-12 gap-6">
+
+    <!-- Deals -->
+    <div class="col-span-12 lg:col-span-5">
+      <div class="flex items-center justify-between mb-3">
+        <div class="text-lg font-semibold">Active Deals <span id="deals-count" class="text-gray-500 text-sm"></span></div>
+        <button id="btn-refresh" class="btn-ghost text-xs">↻ Refresh</button>
+      </div>
+      <div id="deals-list" class="space-y-2"></div>
+    </div>
+
+    <!-- Brokers -->
+    <div class="col-span-12 lg:col-span-3">
+      <div class="flex items-center justify-between mb-3">
+        <div class="text-lg font-semibold">Brokers <span id="brokers-count" class="text-gray-500 text-sm"></span></div>
+      </div>
+      <input id="broker-search" class="input mb-2 text-sm" placeholder="Search brokers…" />
+      <div id="brokers-list" class="space-y-2 max-h-[70vh] overflow-y-auto pr-1"></div>
+    </div>
+
+    <!-- Detail pane (broker or deal) -->
+    <div class="col-span-12 lg:col-span-4">
+      <div id="detail-empty" class="card p-6 text-gray-500 text-sm text-center">
+        Click a deal or broker to see details, timeline, and compose follow-ups.
+      </div>
+      <div id="detail-pane" class="hidden"></div>
+    </div>
+  </div>
+</section>
+
+<!-- =================== SETTINGS MODAL =================== -->
+<div id="settings-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-start justify-center pt-20 px-4">
+  <div class="card w-full max-w-2xl p-6 max-h-[80vh] overflow-y-auto">
+    <div class="flex items-center justify-between mb-4">
+      <div class="text-xl font-bold">Settings</div>
+      <button id="settings-close" class="btn-ghost text-sm">Close</button>
+    </div>
+    <div id="settings-body" class="space-y-4 text-sm"></div>
+  </div>
+</div>
+
+<!-- =================== COMPOSE DRAWER =================== -->
+<div id="compose-modal" class="hidden fixed inset-0 bg-black/70 z-50 flex items-center justify-center px-4">
+  <div class="card w-full max-w-2xl p-6">
+    <div class="flex items-center justify-between mb-4">
+      <div class="text-xl font-bold" id="compose-title">Compose</div>
+      <button id="compose-close" class="btn-ghost text-sm">Close</button>
+    </div>
+    <div id="compose-body" class="space-y-3"></div>
+  </div>
+</div>
+
+<!-- =================== TOAST =================== -->
+<div id="toast" class="hidden fixed bottom-6 right-6 card p-3 text-sm z-50"></div>
+
+<script type="module">
+/* ==========================================================================
+   BrokerFlow frontend SPA.
+   Runs entirely in the browser. Uses Supabase auth for session management
+   and calls the FastAPI /api/v2 endpoints with the user's JWT.
+   ========================================================================== */
+
+/* ---------- tiny helpers ---------- */
+const $ = (id) => document.getElementById(id);
+const show = (id) => $(id)?.classList.remove("hidden");
+const hide = (id) => $(id)?.classList.add("hidden");
+const toast = (msg, kind = "ok") => {
+  const t = $("toast");
+  t.textContent = msg;
+  t.classList.remove("hidden");
+  t.style.borderColor = kind === "err" ? "#dc2626" : kind === "warn" ? "#d97706" : "#16a34a";
+  clearTimeout(window.__toastT);
+  window.__toastT = setTimeout(() => t.classList.add("hidden"), 3500);
+};
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({
+  "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+}[c]));
+const fmtMoney = (n) => n ? "$" + Number(n).toLocaleString() : "—";
+const fmtAgo = (iso) => {
+  if (!iso) return "—";
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
+};
+
+/* ---------- state ---------- */
+const state = {
+  supabase: null,
+  session: null,
+  meta: null,
+  deals: [],
+  brokers: [],
+  selectedType: null,  // 'deal' | 'broker'
+  selectedId: null,
+};
+
+/* ---------- API wrappers ---------- */
+async function apiGet(path) {
+  const res = await fetch(path, {
+    headers: state.session ? { Authorization: `Bearer ${state.session.access_token}` } : {},
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json();
+}
+async function apiJson(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...(state.session ? { Authorization: `Bearer ${state.session.access_token}` } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.status === 204 ? null : res.json();
+}
+
+/* ---------- boot ---------- */
+(async function boot() {
+  let pub;
+  try {
+    pub = await (await fetch("/api/v2/public/meta")).json();
+  } catch (e) {
+    show("view-not-configured"); hide("view-boot"); return;
+  }
+  if (!pub.supabase_configured) {
+    show("view-not-configured"); hide("view-boot"); return;
+  }
+  state.supabase = window.__createSupabaseClient(pub.supabase_url, pub.supabase_anon_key);
+  const { data: { session } } = await state.supabase.auth.getSession();
+  state.session = session;
+  state.supabase.auth.onAuthStateChange((_evt, s) => {
+    state.session = s;
+    if (!s) { hide("view-dashboard"); hide("view-wizard"); hide("topbar"); show("view-auth"); }
+  });
+
+  if (!state.session) { show("view-auth"); hide("view-boot"); return; }
+  await routeAfterLogin();
+})();
+
+async function routeAfterLogin() {
+  hide("view-boot"); hide("view-auth");
+  show("topbar");
+  $("user-email").textContent = state.session.user.email || "(guest)";
+  try {
+    state.meta = await apiGet("/api/v2/meta");
+  } catch (e) {
+    toast("Failed to load account metadata: " + e.message, "err");
+    return;
+  }
+  if (!state.meta.wizard_completed) {
+    show("view-wizard");
+    renderWizardStep(state.meta.wizard_step || 1);
+  } else {
+    show("view-dashboard");
+    await refreshDashboard();
+  }
+}
+
+/* ---------- AUTH ---------- */
+let authMode = "login";
+const setAuthMode = (m) => {
+  authMode = m;
+  $("auth-submit-label").textContent = m === "login" ? "Sign in" : "Create account";
+  $("tab-login").classList.toggle("btn", m === "login");
+  $("tab-login").classList.toggle("btn-ghost", m !== "login");
+  $("tab-signup").classList.toggle("btn", m === "signup");
+  $("tab-signup").classList.toggle("btn-ghost", m !== "signup");
+};
+$("tab-login").onclick = () => setAuthMode("login");
+$("tab-signup").onclick = () => setAuthMode("signup");
+
+$("form-auth").onsubmit = async (e) => {
+  e.preventDefault();
+  const email = $("auth-email").value.trim();
+  const password = $("auth-password").value;
+  hide("auth-error");
+  const { data, error } = authMode === "login"
+    ? await state.supabase.auth.signInWithPassword({ email, password })
+    : await state.supabase.auth.signUp({ email, password });
+  if (error) { $("auth-error").textContent = error.message; show("auth-error"); return; }
+  if (authMode === "signup" && !data.session) {
+    $("auth-error").textContent = "Account created — check email to confirm, then sign in.";
+    show("auth-error");
+    return;
+  }
+  state.session = data.session;
+  await routeAfterLogin();
+};
+
+$("btn-google").onclick = async () => {
+  const { error } = await state.supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: { redirectTo: window.location.origin },
+  });
+  if (error) toast(error.message, "err");
+};
+
+$("btn-guest").onclick = async () => {
+  const { data, error } = await state.supabase.auth.signInAnonymously();
+  if (error) { toast(error.message, "err"); return; }
+  state.session = data.session;
+  await routeAfterLogin();
+};
+
+$("btn-logout").onclick = async () => {
+  await state.supabase.auth.signOut();
+  state.session = null;
+  hide("view-dashboard"); hide("view-wizard"); hide("topbar");
+  show("view-auth");
+};
+
+/* ---------- WIZARD ---------- */
+function renderWizardStep(n) {
+  for (let i = 1; i <= 5; i++) {
+    const step = $("step-" + i);
+    if (step) step.classList.toggle("hidden", i !== n);
+    const dot = $("dot-" + i);
+    if (dot) {
+      dot.classList.remove("active", "done", "pending");
+      if (i < n) dot.classList.add("done");
+      else if (i === n) dot.classList.add("active");
+      else dot.classList.add("pending");
+    }
+  }
+}
+document.querySelectorAll(".wizard-next").forEach(b => {
+  b.onclick = () => renderWizardStep(parseInt(b.dataset.next));
+});
+$("wiz-skip").onclick = async () => {
+  await apiJson("POST", "/api/v2/wizard/complete");
+  state.meta = await apiGet("/api/v2/meta");
+  hide("view-wizard"); show("view-dashboard");
+  await refreshDashboard();
+};
+$("wiz-finish").onclick = async () => {
+  await apiJson("POST", "/api/v2/wizard/complete");
+  state.meta = await apiGet("/api/v2/meta");
+  hide("view-wizard"); show("view-dashboard");
+  await refreshDashboard();
+};
+
+/* Step 1: ClickUp */
+$("cu-test").onclick = async () => {
+  const token = $("cu-token").value.trim();
+  if (!token) return;
+  $("cu-test-result").innerHTML = '<span class="spin"></span> Testing…';
+  try {
+    const r = await apiJson("POST", "/api/v2/wizard/clickup/test", { token });
+    if (!r.ok) throw new Error(r.error || "Invalid token");
+    $("cu-test-result").innerHTML = `<span class="pill pill-ok">Connected</span> ${r.workspaces.length} workspace(s) found`;
+    const sel = $("cu-workspace"); sel.innerHTML = "";
+    r.workspaces.forEach(w => sel.innerHTML += `<option value="${w.id}">${esc(w.name)}</option>`);
+    show("cu-workspace-picker");
+  } catch (e) {
+    $("cu-test-result").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
+  }
+};
+$("cu-load-spaces").onclick = async () => {
+  const token = $("cu-token").value.trim();
+  const workspace_id = $("cu-workspace").value;
+  $("cu-create-result").innerHTML = '<span class="spin"></span> Loading spaces…';
+  try {
+    const r = await apiJson("POST", "/api/v2/wizard/clickup/spaces", { token, workspace_id });
+    const sel = $("cu-space"); sel.innerHTML = "";
+    r.spaces.forEach(s => sel.innerHTML += `<option value="${esc(s.id)}">${esc(s.name)}</option>`);
+    show("cu-space-picker");
+    $("cu-create-result").innerHTML = `<span class="pill pill-ok">${r.spaces.length} space(s)</span>`;
+  } catch (e) {
+    $("cu-create-result").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
+  }
+};
+
+$("cu-create").onclick = async () => {
+  const token = $("cu-token").value.trim();
+  const workspace_id = $("cu-workspace").value;
+  const space_id = $("cu-space").value;
+  $("cu-create-result").innerHTML = '<span class="spin"></span> Creating folder + lists…';
+  try {
+    const r = await apiJson("POST", "/api/v2/wizard/clickup/setup", { token, workspace_id, space_id });
+    $("cu-create-result").innerHTML = `<span class="pill pill-ok">Ready</span> Folder + 5 lists created.`;
+    $("cu-next").disabled = false;
+  } catch (e) {
+    $("cu-create-result").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
+  }
+};
+
+/* Step 2: SMTP */
+$("smtp-save").onclick = async () => {
+  await apiJson("PUT", "/api/v2/config", {
+    smtp_host: $("smtp-host").value.trim(),
+    smtp_port: parseInt($("smtp-port").value) || null,
+    smtp_user: $("smtp-user").value.trim(),
+    smtp_pass: $("smtp-pass").value,
+    smtp_from: $("smtp-from").value.trim(),
+  });
+  $("smtp-result").innerHTML = `<span class="pill pill-ok">Saved</span>`;
+};
+$("smtp-test").onclick = async () => {
+  $("smtp-result").innerHTML = '<span class="spin"></span> Connecting…';
+  try {
+    const r = await apiJson("POST", "/api/v2/wizard/smtp/test", {
+      host: $("smtp-host").value.trim(),
+      port: parseInt($("smtp-port").value) || 587,
+      user: $("smtp-user").value.trim(),
+      password: $("smtp-pass").value,
+    });
+    $("smtp-result").innerHTML = r.ok
+      ? `<span class="pill pill-ok">Login works</span>`
+      : `<span class="pill pill-bad">Failed</span> ${esc(r.error || "")}`;
+  } catch (e) {
+    $("smtp-result").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
+  }
+};
+
+/* Step 3: Twilio */
+$("tw-save").onclick = async () => {
+  await apiJson("PUT", "/api/v2/config", {
+    twilio_account_sid: $("tw-sid").value.trim(),
+    twilio_auth_token: $("tw-token").value,
+    twilio_from_number: $("tw-from").value.trim(),
+  });
+  $("tw-result").innerHTML = `<span class="pill pill-ok">Saved</span>`;
+};
+$("tw-test").onclick = async () => {
+  $("tw-result").innerHTML = '<span class="spin"></span> Checking…';
+  try {
+    const r = await apiJson("POST", "/api/v2/wizard/twilio/test", {
+      account_sid: $("tw-sid").value.trim(),
+      auth_token: $("tw-token").value,
+    });
+    $("tw-result").innerHTML = r.ok
+      ? `<span class="pill pill-ok">Connected</span> ${esc(r.account_name || "")}`
+      : `<span class="pill pill-bad">Failed</span> ${esc(r.error || "")}`;
+  } catch (e) {
+    $("tw-result").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
+  }
+};
+
+/* Step 4: Anthropic */
+$("an-save").onclick = async () => {
+  await apiJson("PUT", "/api/v2/config", { anthropic_api_key: $("an-key").value });
+  $("an-result").innerHTML = `<span class="pill pill-ok">Saved</span>`;
+};
+$("an-test").onclick = async () => {
+  $("an-result").innerHTML = '<span class="spin"></span> Pinging Claude…';
+  try {
+    const r = await apiJson("POST", "/api/v2/wizard/anthropic/test", { api_key: $("an-key").value });
+    $("an-result").innerHTML = r.ok
+      ? `<span class="pill pill-ok">Key works</span>`
+      : `<span class="pill pill-bad">Failed</span> ${esc(r.error || "")}`;
+  } catch (e) {
+    $("an-result").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
+  }
+};
+
+/* ---------- DASHBOARD ---------- */
+$("btn-refresh").onclick = refreshDashboard;
+
+async function refreshDashboard() {
+  $("deals-list").innerHTML = '<div class="card p-4 text-sm text-gray-500"><span class="spin"></span> Loading deals…</div>';
+  $("brokers-list").innerHTML = '<div class="card p-4 text-sm text-gray-500"><span class="spin"></span> Loading brokers…</div>';
+  try {
+    const [dealsResp, brokersResp] = await Promise.all([
+      apiGet("/api/v2/deals"),
+      apiGet("/api/v2/brokers"),
+    ]);
+    state.deals = dealsResp.deals || [];
+    state.brokers = brokersResp.brokers || [];
+    renderDeals();
+    renderBrokers();
+  } catch (e) {
+    $("deals-list").innerHTML = `<div class="card p-4 text-sm text-red-400">${esc(e.message)}</div>`;
+    $("brokers-list").innerHTML = "";
+  }
+}
+
+function renderDeals() {
+  $("deals-count").textContent = `· ${state.deals.length}`;
+  $("deals-list").innerHTML = state.deals.length === 0
+    ? `<div class="card p-4 text-sm text-gray-500">No deals yet.</div>`
+    : state.deals.map(d => {
+        const loc = [d.city, d.state].filter(Boolean).join(", ");
+        return `
+      <div class="card p-3 cursor-pointer hover:border-blue-500" data-deal-id="${esc(d.id)}">
+        <div class="flex items-start justify-between gap-2">
+          <div class="font-semibold">${esc(d.name || "(untitled)")}</div>
+          <div class="text-xs text-gray-500 shrink-0">${esc(d.status || "—")}</div>
+        </div>
+        <div class="text-xs text-gray-400 mt-1">
+          ${esc(d.asset_class || "")} · ${esc(loc)} · ${fmtMoney(d.ask_price)}
+        </div>
+      </div>`}).join("");
+  document.querySelectorAll("[data-deal-id]").forEach(el =>
+    el.onclick = () => selectDeal(el.dataset.dealId));
+}
+
+function renderBrokers() {
+  const q = $("broker-search").value.toLowerCase();
+  const filtered = !q ? state.brokers : state.brokers.filter(b =>
+    (b.name || "").toLowerCase().includes(q) ||
+    (b.email || "").toLowerCase().includes(q) ||
+    (b.firm || "").toLowerCase().includes(q));
+  $("brokers-count").textContent = `· ${filtered.length}`;
+  $("brokers-list").innerHTML = filtered.length === 0
+    ? `<div class="card p-3 text-xs text-gray-500">No brokers.</div>`
+    : filtered.map(b => `
+      <div class="card p-3 cursor-pointer hover:border-blue-500" data-broker-id="${esc(b.id)}">
+        <div class="font-semibold text-sm">${esc(b.name || "(unnamed)")}</div>
+        <div class="text-xs text-gray-400">${esc(b.firm || "")}</div>
+        <div class="text-xs text-gray-500 mt-1">${esc(b.email || b.phone || "—")}</div>
+      </div>`).join("");
+  document.querySelectorAll("[data-broker-id]").forEach(el =>
+    el.onclick = () => selectBroker(el.dataset.brokerId));
+}
+$("broker-search").oninput = renderBrokers;
+
+async function selectDeal(id) {
+  state.selectedType = "deal"; state.selectedId = id;
+  hide("detail-empty"); show("detail-pane");
+  $("detail-pane").innerHTML = `<div class="card p-4 text-sm text-gray-500"><span class="spin"></span> Loading…</div>`;
+  try {
+    const d = await apiGet(`/api/v2/deals/${encodeURIComponent(id)}/full`);
+    $("detail-pane").innerHTML = renderDealDetail(d);
+    wireDetailHandlers();
+  } catch (e) {
+    $("detail-pane").innerHTML = `<div class="card p-4 text-sm text-red-400">${esc(e.message)}</div>`;
+  }
+}
+
+async function selectBroker(id) {
+  state.selectedType = "broker"; state.selectedId = id;
+  hide("detail-empty"); show("detail-pane");
+  $("detail-pane").innerHTML = `<div class="card p-4 text-sm text-gray-500"><span class="spin"></span> Loading…</div>`;
+  try {
+    const b = await apiGet(`/api/v2/brokers/${encodeURIComponent(id)}/full`);
+    $("detail-pane").innerHTML = renderBrokerDetail(b);
+    wireDetailHandlers();
+  } catch (e) {
+    $("detail-pane").innerHTML = `<div class="card p-4 text-sm text-red-400">${esc(e.message)}</div>`;
+  }
+}
+
+function renderDealDetail(d) {
+  const deal = d.deal || {};
+  const brokers = d.brokers || [];
+  const touchpoints = d.touchpoints || [];
+  const loc = [deal.city, deal.state].filter(Boolean).join(", ");
+  return `
+    <div class="card p-4">
+      <div class="font-bold text-lg">${esc(deal.name || "(deal)")}</div>
+      <div class="text-xs text-gray-400 mt-1">${esc(deal.asset_class || "")} · ${esc(loc)}</div>
+      <div class="grid grid-cols-2 gap-2 text-xs text-gray-400 mt-3">
+        <div>Ask: <span class="text-gray-200">${fmtMoney(deal.ask_price)}</span></div>
+        <div>Stage: <span class="text-gray-200">${esc(deal.status || "—")}</span></div>
+        <div>Cap rate: <span class="text-gray-200">${esc(deal.cap_rate || "—")}</span></div>
+        <div>Units: <span class="text-gray-200">${esc(deal.units || "—")}</span></div>
+      </div>
+      <div class="mt-4 text-xs uppercase tracking-wide text-gray-500">Brokers</div>
+      <div class="mt-2 space-y-1">
+        ${brokers.length ? brokers.map(b => `
+          <div class="flex items-center justify-between text-sm">
+            <span>${esc(b.name)}</span>
+            <span class="text-xs text-gray-500">${esc(b.email || b.phone || "")}</span>
+          </div>`).join("") : '<div class="text-xs text-gray-600">No brokers linked.</div>'}
+      </div>
+    </div>
+    <div class="card p-4 mt-3">
+      <div class="flex items-center justify-between mb-2">
+        <div class="text-sm font-semibold">Recent activity</div>
+        <button class="btn-ghost text-xs" data-log-note data-deal-id="${esc(deal.id)}">+ Log note</button>
+      </div>
+      ${renderTimeline(touchpoints)}
+    </div>
+  `;
+}
+
+function renderBrokerDetail(d) {
+  const b = d.broker || {};
+  const deals = d.deals || [];
+  const touchpoints = d.touchpoints || [];
+  const last = d.last_contact;
+  return `
+    <div class="card p-4">
+      <div class="font-bold text-lg">${esc(b.name || "(broker)")}</div>
+      <div class="text-xs text-gray-400 mt-1">${esc(b.firm || "")}</div>
+      <div class="text-xs text-gray-500 mt-2">
+        Email: <span class="text-gray-300">${esc(b.email || "—")}</span><br/>
+        Phone: <span class="text-gray-300">${esc(b.phone || "—")}</span>
+      </div>
+      <div class="text-xs mt-3">
+        Last contact: <span class="text-gray-200">${last ? fmtAgo(last) : "never"}</span>
+        ${last ? `<span class="text-gray-600"> · ${new Date(last).toLocaleString()}</span>` : ""}
+      </div>
+
+      <div class="mt-4 flex gap-2">
+        ${b.email ? `<button class="btn text-sm" data-compose-email data-broker-id="${esc(b.id)}">Email</button>` : ""}
+        ${b.phone ? `<button class="btn-ghost text-sm" data-compose-sms data-broker-id="${esc(b.id)}">SMS</button>` : ""}
+        <button class="btn-ghost text-sm" data-log-note data-broker-id="${esc(b.id)}">Log note</button>
+      </div>
+    </div>
+
+    <div class="card p-4 mt-3">
+      <div class="text-sm font-semibold mb-2">Open deals (${deals.length})</div>
+      ${deals.length ? deals.map(dl => `
+        <div class="text-sm py-1 border-b border-gray-800 last:border-0">
+          ${esc(dl.name || "(deal)")}
+          <span class="text-xs text-gray-500"> · ${esc(dl.stage || "")}</span>
+        </div>`).join("") : '<div class="text-xs text-gray-600">None.</div>'}
+    </div>
+
+    <div class="card p-4 mt-3">
+      <div class="text-sm font-semibold mb-2">Timeline</div>
+      ${renderTimeline(touchpoints)}
+    </div>
+  `;
+}
+
+function renderTimeline(tps) {
+  if (!tps || tps.length === 0) return '<div class="text-xs text-gray-600">No activity yet.</div>';
+  return tps.map(t => `
+    <div class="border-l-2 border-gray-800 pl-3 py-1 text-sm">
+      <div class="flex items-center gap-2 text-xs text-gray-500">
+        <span class="pill ${t.direction === 'outbound' ? 'pill-ok' : t.direction === 'inbound' ? 'pill-warn' : 'pill-muted'}">
+          ${esc(t.channel)} ${t.direction === 'outbound' ? '↑' : t.direction === 'inbound' ? '↓' : ''}
+        </span>
+        <span>${fmtAgo(t.occurred_at)}</span>
+        <span class="text-gray-600">${new Date(t.occurred_at).toLocaleString()}</span>
+      </div>
+      ${t.subject ? `<div class="font-medium mt-1">${esc(t.subject)}</div>` : ""}
+      ${t.body ? `<div class="text-gray-400 text-xs mt-1 whitespace-pre-wrap">${esc(t.body).slice(0, 400)}</div>` : ""}
+    </div>
+  `).join("");
+}
+
+function wireDetailHandlers() {
+  document.querySelectorAll("[data-compose-email]").forEach(b =>
+    b.onclick = () => openCompose("email", b.dataset.brokerId));
+  document.querySelectorAll("[data-compose-sms]").forEach(b =>
+    b.onclick = () => openCompose("sms", b.dataset.brokerId));
+  document.querySelectorAll("[data-log-note]").forEach(b =>
+    b.onclick = () => openLogNote(b.dataset.brokerId, b.dataset.dealId));
+}
+
+/* ---------- COMPOSE ---------- */
+function openCompose(channel, brokerId) {
+  $("compose-title").textContent = channel === "email" ? "Compose email" : "Compose SMS";
+  // Look up broker to get default recipient
+  const broker = state.brokers.find(b => b.id === brokerId) || {};
+  const defaultTo = channel === "email" ? (broker.email || "") : (broker.phone || "");
+  const body = $("compose-body");
+  body.innerHTML = `
+    <div class="flex gap-2 mb-2">
+      <button id="draft-btn" class="btn-ghost text-sm">✨ Draft with Claude</button>
+      <select id="draft-deal" class="input text-sm" style="max-width:240px"><option value="">(no deal context)</option>${
+        state.deals.map(d => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("")
+      }</select>
+    </div>
+    ${channel === "email" ? `
+      <input id="c-to" class="input" placeholder="to@example.com" value="${esc(defaultTo)}" />
+      <input id="c-subject" class="input" placeholder="Subject" />
+      <textarea id="c-body" class="input" rows="10" placeholder="Body"></textarea>
+    ` : `
+      <input id="c-to" class="input" placeholder="+15551234567" value="${esc(defaultTo)}" />
+      <textarea id="c-body" class="input" rows="5" maxlength="320" placeholder="SMS body (160 chars recommended)"></textarea>
+      <div class="text-xs text-gray-500" id="sms-count">0 / 160</div>
+    `}
+    <div id="compose-status" class="text-xs"></div>
+    <div class="flex gap-2 justify-end mt-2">
+      <button id="compose-cancel" class="btn-ghost">Cancel</button>
+      <button id="compose-send" class="btn">Send ${channel === "email" ? "email" : "SMS"}</button>
+    </div>
+  `;
+  show("compose-modal");
+
+  $("draft-btn").onclick = async () => {
+    $("compose-status").innerHTML = '<span class="spin"></span> Drafting…';
+    try {
+      const r = await apiJson("POST", `/api/v2/draft/${channel}`, {
+        broker_id: brokerId,
+        deal_id: $("draft-deal").value || null,
+      });
+      if (channel === "email") {
+        $("c-subject").value = r.subject || "";
+        $("c-body").value = r.body || "";
+      } else {
+        $("c-body").value = r.body || "";
+        $("sms-count").textContent = `${($("c-body").value || "").length} / 160`;
+      }
+      $("compose-status").innerHTML = `<span class="pill pill-ok">Drafted</span>`;
+    } catch (e) {
+      $("compose-status").innerHTML = `<span class="pill pill-bad">Draft failed</span> ${esc(e.message)}`;
+    }
+  };
+
+  if (channel === "sms") {
+    $("c-body").oninput = () => $("sms-count").textContent = `${$("c-body").value.length} / 160`;
+  }
+
+  $("compose-cancel").onclick = () => hide("compose-modal");
+  $("compose-send").onclick = async () => {
+    $("compose-status").innerHTML = '<span class="spin"></span> Sending…';
+    try {
+      const body = channel === "email"
+        ? { to: $("c-to").value.trim(), broker_id: brokerId, deal_id: $("draft-deal").value || null, subject: $("c-subject").value, body: $("c-body").value }
+        : { to: $("c-to").value.trim(), broker_id: brokerId, deal_id: $("draft-deal").value || null, body: $("c-body").value };
+      const r = await apiJson("POST", `/api/v2/send/${channel}`, body);
+      toast(`${channel.toUpperCase()} sent`);
+      hide("compose-modal");
+      if (state.selectedType === "broker" && state.selectedId === brokerId) selectBroker(brokerId);
+    } catch (e) {
+      $("compose-status").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
+    }
+  };
+}
+$("compose-close").onclick = () => hide("compose-modal");
+
+function openLogNote(brokerId, dealId) {
+  $("compose-title").textContent = "Log touchpoint";
+  $("compose-body").innerHTML = `
+    <div class="grid grid-cols-2 gap-2">
+      <select id="n-channel" class="input text-sm">
+        <option value="note">Note</option>
+        <option value="call">Call</option>
+        <option value="email">Email</option>
+        <option value="sms">SMS</option>
+      </select>
+      <select id="n-direction" class="input text-sm">
+        <option value="outbound">Outbound</option>
+        <option value="inbound">Inbound</option>
+        <option value="note">Internal note</option>
+      </select>
+    </div>
+    <input id="n-subject" class="input" placeholder="Subject (optional)" />
+    <textarea id="n-body" class="input" rows="5" placeholder="What happened?"></textarea>
+    <div id="n-status" class="text-xs"></div>
+    <div class="flex gap-2 justify-end">
+      <button id="n-cancel" class="btn-ghost">Cancel</button>
+      <button id="n-save" class="btn">Save</button>
+    </div>
+  `;
+  show("compose-modal");
+  $("n-cancel").onclick = () => hide("compose-modal");
+  $("n-save").onclick = async () => {
+    try {
+      await apiJson("POST", "/api/v2/touchpoints", {
+        broker_id: brokerId,
+        deal_id: dealId || null,
+        channel: $("n-channel").value,
+        direction: $("n-direction").value,
+        subject: $("n-subject").value,
+        body: $("n-body").value,
+        source: "manual",
+      });
+      hide("compose-modal");
+      toast("Logged");
+      if (state.selectedType === "broker") selectBroker(state.selectedId);
+      else if (state.selectedType === "deal") selectDeal(state.selectedId);
+    } catch (e) {
+      $("n-status").innerHTML = `<span class="pill pill-bad">Failed</span> ${esc(e.message)}`;
+    }
+  };
+}
+
+/* ---------- SETTINGS MODAL ---------- */
+$("btn-settings").onclick = openSettings;
+$("settings-close").onclick = () => hide("settings-modal");
+
+async function openSettings() {
+  show("settings-modal");
+  $("settings-body").innerHTML = `<div class="text-gray-500 text-sm"><span class="spin"></span> Loading…</div>`;
+  const cfg = await apiGet("/api/v2/config");
+  $("settings-body").innerHTML = `
+    <details open><summary class="font-semibold">ClickUp</summary>
+      <div class="pt-2 space-y-2">
+        <label class="text-xs text-gray-500">API token</label>
+        <input class="input" data-cfg="clickup_token" placeholder="pk_..." value="${esc(cfg.clickup_token || "")}" />
+      </div>
+    </details>
+    <details><summary class="font-semibold">Email / SMTP</summary>
+      <div class="pt-2 grid grid-cols-2 gap-2">
+        <div><label class="text-xs text-gray-500">Host</label><input class="input" data-cfg="smtp_host" value="${esc(cfg.smtp_host || "")}" /></div>
+        <div><label class="text-xs text-gray-500">Port</label><input class="input" data-cfg="smtp_port" value="${esc(cfg.smtp_port || "")}" /></div>
+        <div><label class="text-xs text-gray-500">User</label><input class="input" data-cfg="smtp_user" value="${esc(cfg.smtp_user || "")}" /></div>
+        <div><label class="text-xs text-gray-500">Password</label><input class="input" type="password" data-cfg="smtp_pass" value="${esc(cfg.smtp_pass || "")}" /></div>
+        <div class="col-span-2"><label class="text-xs text-gray-500">From</label><input class="input" data-cfg="smtp_from" value="${esc(cfg.smtp_from || "")}" /></div>
+      </div>
+    </details>
+    <details><summary class="font-semibold">SMS / Twilio</summary>
+      <div class="pt-2 grid grid-cols-2 gap-2">
+        <div><label class="text-xs text-gray-500">Account SID</label><input class="input" data-cfg="twilio_account_sid" value="${esc(cfg.twilio_account_sid || "")}" /></div>
+        <div><label class="text-xs text-gray-500">Auth token</label><input class="input" type="password" data-cfg="twilio_auth_token" value="${esc(cfg.twilio_auth_token || "")}" /></div>
+        <div class="col-span-2"><label class="text-xs text-gray-500">From number</label><input class="input" data-cfg="twilio_from_number" value="${esc(cfg.twilio_from_number || "")}" /></div>
+      </div>
+    </details>
+    <details><summary class="font-semibold">Claude AI (Anthropic)</summary>
+      <div class="pt-2"><label class="text-xs text-gray-500">API key</label>
+      <input class="input" type="password" data-cfg="anthropic_api_key" value="${esc(cfg.anthropic_api_key || "")}" /></div>
+    </details>
+    <div class="pt-2">
+      <button id="cfg-save" class="btn">Save</button>
+      <span id="cfg-status" class="ml-3 text-xs"></span>
+    </div>
+    <div class="text-xs text-gray-600 pt-1">Fields marked with dots (like ••••abc123) are already saved — edit only fields you want to change.</div>
+  `;
+  $("cfg-save").onclick = async () => {
+    const updates = {};
+    document.querySelectorAll("[data-cfg]").forEach(i => {
+      const key = i.dataset.cfg;
+      const val = i.value;
+      // Skip masked fields (contain bullet) to prevent wiping
+      if (val && !val.includes("•")) updates[key] = val;
+    });
+    // Coerce numeric
+    if (updates.smtp_port) updates.smtp_port = parseInt(updates.smtp_port) || null;
+    try {
+      await apiJson("PUT", "/api/v2/config", updates);
+      $("cfg-status").innerHTML = `<span class="pill pill-ok">Saved</span>`;
+    } catch (e) {
+      $("cfg-status").innerHTML = `<span class="pill pill-bad">${esc(e.message)}</span>`;
+    }
+  };
+}
+</script>
+</body>
+</html>
