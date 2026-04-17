@@ -394,12 +394,18 @@ const state = {
   selectedType: null,  // 'deal' | 'broker'
   selectedId: null,
   // Teams / multi-tenant workspace state
+  // Level 1 = Workspace (existing /api/v2/teams endpoints)
   teams: [],
   activeTeamId: null,
   teamMembers: [],
   teamRoles: [],
   teamInvites: [],
   pendingInviteToken: null,
+  // Level 2 = Sub-teams inside a workspace
+  subteams: [],
+  activeSubteamId: null,
+  subteamMembers: [],
+  subteamRoles: [],
 };
 
 /* ---------- API wrappers ---------- */
@@ -1818,23 +1824,23 @@ function tplTeamTab() {
 
   if (!teams.length) {
     return `
-      <div class="text-sm font-semibold mb-3">Teams & workspaces</div>
-      <div class="text-xs text-gray-500 mb-4">No team yet. Create one to invite teammates, share deals, and manage permissions.</div>
-      <button class="btn text-xs" data-team-new>Create team</button>`;
+      <div class="text-sm font-semibold mb-3">Workspaces &amp; Teams</div>
+      <div class="text-xs text-gray-500 mb-4">No workspace yet. Create one to invite teammates, share deals, group people into teams, and manage permissions.</div>
+      <button class="btn text-xs" data-team-new>Create workspace</button>`;
   }
 
   const teamSwitcher = `
     <div class="flex items-center gap-2 mb-4 flex-wrap">
-      <label class="text-xs text-gray-500">Active team:</label>
+      <label class="text-xs text-gray-500">Active workspace:</label>
       <select id="tm-active" class="input text-sm" style="width:auto">
         ${teams.map(t => `<option value="${esc(t.id)}" ${t.id === activeId ? "selected" : ""}>${esc(t.name)}${t.is_owner ? " · Owner" : ""}</option>`).join("")}
       </select>
-      <button class="btn-ghost text-xs" data-team-new>+ New team</button>
+      <button class="btn-ghost text-xs" data-team-new>+ New workspace</button>
       ${isOwner ? `<button class="btn-ghost text-xs" data-team-rename>Rename</button>` : ""}
-      ${isOwner ? `<button class="btn-danger text-xs ml-auto" data-team-delete>Delete team</button>` : `<button class="btn-ghost text-xs ml-auto" data-team-leave>Leave team</button>`}
+      ${isOwner ? `<button class="btn-danger text-xs ml-auto" data-team-delete>Delete workspace</button>` : `<button class="btn-ghost text-xs ml-auto" data-team-leave>Leave workspace</button>`}
     </div>`;
 
-  if (!active) return teamSwitcher + `<div class="text-xs text-gray-500">Select a team above.</div>`;
+  if (!active) return teamSwitcher + `<div class="text-xs text-gray-500">Select a workspace above.</div>`;
 
   const memberRow = (m) => {
     const role = m.team_roles || {};
@@ -1910,10 +1916,11 @@ function tplTeamTab() {
   return `
     ${teamSwitcher}
 
+    <div class="text-[11px] uppercase tracking-wider text-gray-500 mb-2">Workspace · level 1</div>
     <div class="grid grid-cols-2 gap-4">
       <div>
         <div class="flex items-center justify-between mb-2">
-          <div class="text-sm font-semibold">Members (${members.length})</div>
+          <div class="text-sm font-semibold">Workspace members (${members.length})</div>
           ${canManageMembers ? `<button class="btn text-xs" data-team-invite>+ Invite</button>` : ""}
         </div>
         <div class="card p-0 overflow-x-auto">
@@ -1926,7 +1933,7 @@ function tplTeamTab() {
 
       <div>
         <div class="flex items-center justify-between mb-2">
-          <div class="text-sm font-semibold">Roles (${roles.length})</div>
+          <div class="text-sm font-semibold">Workspace roles (${roles.length})</div>
           ${canManageRoles ? `<button class="btn text-xs" data-role-new>+ New role</button>` : ""}
         </div>
         <div class="card p-0 overflow-x-auto">
@@ -1946,6 +1953,56 @@ function tplTeamTab() {
           <tbody>${invites.map(inviteRow).join("") || `<tr><td colspan="5" class="p-3 text-center text-gray-500">No invitations sent.</td></tr>`}</tbody>
         </table>
       </div>
+    </div>
+
+    ${tplSubteamSection(active)}`;
+}
+
+/* ==========================================================================
+   SUB-TEAMS (Level 2 inside a workspace)
+   ========================================================================== */
+
+function tplSubteamSection(workspace) {
+  const perms = workspace.permissions || {};
+  const canCreateSubteam = !!(workspace.is_owner || perms.admin || perms.manage_members);
+  const subteams = state.subteams || [];
+
+  const cardFor = (st) => {
+    const joinedBadge = st.joined
+      ? `<span class="pill pill-ok text-[10px]">${esc(st.my_role || "Member")}</span>`
+      : `<span class="pill pill-muted text-[10px]">not joined</span>`;
+    return `
+      <div class="card p-3 flex flex-col gap-1">
+        <div class="flex items-start justify-between gap-2">
+          <div class="min-w-0">
+            <div class="text-sm font-semibold truncate">${esc(st.name)}</div>
+            ${st.description ? `<div class="text-[11px] text-gray-500 truncate">${esc(st.description)}</div>` : ""}
+          </div>
+          ${joinedBadge}
+        </div>
+        <div class="flex items-center justify-between mt-2">
+          <div class="text-[11px] text-gray-500">${st.member_count || 0} member${st.member_count === 1 ? "" : "s"}</div>
+          <div class="flex gap-1">
+            <button class="btn-ghost text-xs" data-subteam-manage="${esc(st.id)}">Manage</button>
+          </div>
+        </div>
+      </div>`;
+  };
+
+  return `
+    <div class="mt-8 pt-4 border-t border-gray-800">
+      <div class="flex items-center justify-between mb-2">
+        <div>
+          <div class="text-[11px] uppercase tracking-wider text-gray-500">Level 2 · inside this workspace</div>
+          <div class="text-sm font-semibold">Teams (${subteams.length})</div>
+          <div class="text-[11px] text-gray-500">Group workspace members into sub-teams with their own roles and permissions.</div>
+        </div>
+        ${canCreateSubteam ? `<button class="btn text-xs" data-subteam-new>+ New team</button>` : ""}
+      </div>
+      ${subteams.length
+        ? `<div class="grid grid-cols-3 gap-3">${subteams.map(cardFor).join("")}</div>`
+        : `<div class="card p-4 text-center text-xs text-gray-500">No teams yet. Create one to group workspace members (e.g., Acquisitions, Asset Mgmt, Dispositions).</div>`
+      }
     </div>`;
 }
 
@@ -1972,17 +2029,394 @@ async function loadActiveTeamData() {
   const tid = state.activeTeamId;
   if (!tid) return;
   try {
-    const [m, r, i] = await Promise.all([
+    const [m, r, i, s] = await Promise.all([
       apiGet(`/api/v2/teams/${encodeURIComponent(tid)}/members`),
       apiGet(`/api/v2/teams/${encodeURIComponent(tid)}/roles`),
       apiGet(`/api/v2/teams/${encodeURIComponent(tid)}/invitations`).catch(() => ({ invitations: [] })),
+      apiGet(`/api/v2/workspaces/${encodeURIComponent(tid)}/teams`).catch(() => ({ teams: [] })),
     ]);
     state.teamMembers = m.members || [];
     state.teamRoles = r.roles || [];
     state.teamInvites = i.invitations || [];
+    state.subteams = s.teams || [];
+  } catch (e) {
+    toast("Failed to load workspace: " + e.message, "err");
+  }
+}
+
+/* ---------- SUB-TEAM CRUD & MANAGER ---------- */
+
+async function loadActiveSubteamData() {
+  const wsId = state.activeTeamId;
+  const stId = state.activeSubteamId;
+  if (!wsId || !stId) return;
+  try {
+    const base = `/api/v2/workspaces/${encodeURIComponent(wsId)}/teams/${encodeURIComponent(stId)}`;
+    const [m, r] = await Promise.all([
+      apiGet(`${base}/members`),
+      apiGet(`${base}/roles`),
+    ]);
+    state.subteamMembers = m.members || [];
+    state.subteamRoles = r.roles || [];
   } catch (e) {
     toast("Failed to load team: " + e.message, "err");
   }
+}
+
+function openSubteamCreate() {
+  const ws = state.teams.find(x => x.id === state.activeTeamId);
+  if (!ws) return;
+  $("compose-title").textContent = `New team in ${ws.name}`;
+  $("compose-body").innerHTML = `
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-500">Team name</label>
+        <input id="nst-name" class="input" placeholder="Acquisitions" />
+      </div>
+      <div>
+        <label class="text-xs text-gray-500">Description (optional)</label>
+        <input id="nst-desc" class="input" placeholder="Sources and evaluates new deals" />
+      </div>
+      <div class="text-xs text-gray-500">You'll become Team Admin. Default roles (Team Admin, Member, Viewer) are created automatically. Add custom roles after.</div>
+      <div class="flex gap-2 justify-end">
+        <button id="nst-cancel" class="btn-ghost">Cancel</button>
+        <button id="nst-save" class="btn">Create</button>
+      </div>
+    </div>`;
+  show("compose-modal");
+  $("nst-cancel").onclick = () => hide("compose-modal");
+  $("nst-save").onclick = async () => {
+    const name = $("nst-name").value.trim();
+    const description = $("nst-desc").value.trim();
+    if (!name) return toast("Name required", "err");
+    try {
+      const r = await apiJson("POST", `/api/v2/workspaces/${encodeURIComponent(ws.id)}/teams`, { name, description });
+      hide("compose-modal");
+      toast("Team created");
+      await loadActiveTeamData();
+      state.activeSubteamId = r.team.id;
+      renderActiveView();
+      openSubteamManager(r.team.id);
+    } catch (e) { toast("Create failed: " + e.message, "err"); }
+  };
+}
+
+async function openSubteamManager(subteamId) {
+  state.activeSubteamId = subteamId;
+  await loadActiveSubteamData();
+  renderSubteamManagerModal();
+}
+
+function renderSubteamManagerModal() {
+  const ws = state.teams.find(x => x.id === state.activeTeamId);
+  const st = (state.subteams || []).find(x => x.id === state.activeSubteamId);
+  if (!ws || !st) return;
+  const members = state.subteamMembers || [];
+  const roles = state.subteamRoles || [];
+  const myPerms = st.my_permissions || {};
+  const isWsAdmin = !!(ws.is_owner || (ws.permissions || {}).admin);
+  const canManageMembers = !!(isWsAdmin || myPerms.team_admin || myPerms.manage_team_members);
+  const canManageRoles = !!(isWsAdmin || myPerms.team_admin || myPerms.manage_team_roles);
+  const canDelete = !!(ws.is_owner || (ws.permissions || {}).admin);
+
+  // Build pool of workspace members NOT yet in this sub-team (for add dropdown)
+  const inTeam = new Set(members.map(m => m.user_id));
+  const wsPool = (state.teamMembers || []).filter(m => !inTeam.has(m.user_id));
+  const wsOwnerIsInPool = (() => {
+    // Workspace owner may not appear in team_members table; include if not in sub-team
+    return false;
+  })();
+
+  const memRow = (m) => {
+    const role = m.workspace_team_roles || {};
+    const isSelf = m.user_id === state.session?.user?.id;
+    const canChange = canManageMembers;
+    const canRemoveRow = canManageMembers || isSelf;
+    return `
+      <tr class="border-t border-gray-800">
+        <td class="p-2">
+          <div class="text-xs text-gray-300 break-all">${esc(m.user_id)}</div>
+          ${isSelf ? `<div class="text-[10px] text-gray-500">you</div>` : ""}
+        </td>
+        <td class="p-2">
+          ${canChange ? `
+            <select class="input text-xs" data-st-role-change="${esc(m.id)}">
+              ${roles.map(r => `<option value="${esc(r.id)}" ${r.id === m.role_id ? "selected" : ""}>${esc(r.name)}</option>`).join("")}
+            </select>` : `<span class="pill">${esc(role.name || "—")}</span>`}
+        </td>
+        <td class="p-2 text-xs text-gray-500">${esc((m.added_at || "").slice(0, 10))}</td>
+        <td class="p-2 text-right">
+          ${canRemoveRow ? `<button class="btn-danger text-xs" data-st-remove-member="${esc(m.id)}">${isSelf ? "Leave" : "Remove"}</button>` : ""}
+        </td>
+      </tr>`;
+  };
+
+  const permFlags = (p) => [
+    p.team_admin && "team_admin",
+    p.manage_team_members && "manage_members",
+    p.manage_team_roles && "manage_roles",
+    p.edit_team_content && "edit_content",
+    p.view_team_content && "view_content",
+  ].filter(Boolean).join(", ") || "—";
+
+  const roleRow = (r) => `
+    <tr class="border-t border-gray-800">
+      <td class="p-2">
+        <div class="flex items-center gap-2">
+          <span class="font-medium">${esc(r.name)}</span>
+          ${r.is_system ? `<span class="pill pill-muted text-[10px]">system</span>` : ""}
+          ${r.is_default ? `<span class="pill pill-ok text-[10px]">default</span>` : ""}
+        </div>
+      </td>
+      <td class="p-2 text-xs text-gray-400">${esc(permFlags(r.permissions || {}))}</td>
+      <td class="p-2 text-right">
+        ${canManageRoles ? `
+          <button class="btn-ghost text-xs" data-st-edit-role="${esc(r.id)}" ${r.is_system && r.name === "Team Admin" ? "disabled" : ""}>Edit</button>
+          ${!r.is_system ? `<button class="btn-danger text-xs ml-1" data-st-delete-role="${esc(r.id)}">Delete</button>` : ""}
+        ` : ""}
+      </td>
+    </tr>`;
+
+  $("compose-title").textContent = `Manage team · ${st.name}`;
+  $("compose-body").innerHTML = `
+    <div class="space-y-4" style="max-height:70vh; overflow-y:auto;">
+      <div class="flex items-center gap-2 flex-wrap">
+        ${canManageMembers ? `<button class="btn-ghost text-xs" data-st-rename>Rename</button>` : ""}
+        ${canDelete ? `<button class="btn-danger text-xs" data-st-delete>Delete team</button>` : ""}
+        <button class="btn-ghost text-xs ml-auto" data-st-close>Close</button>
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold">Members (${members.length})</div>
+          ${canManageMembers && wsPool.length ? `
+            <div class="flex items-center gap-1">
+              <select id="st-add-user" class="input text-xs" style="width:auto">
+                <option value="">Add workspace member…</option>
+                ${wsPool.map(m => `<option value="${esc(m.user_id)}">${esc(m.user_id.slice(0,8))}… (${esc((m.team_roles || {}).name || "member")})</option>`).join("")}
+              </select>
+              <select id="st-add-role" class="input text-xs" style="width:auto">
+                ${roles.map(r => `<option value="${esc(r.id)}" ${r.is_default ? "selected" : ""}>${esc(r.name)}</option>`).join("")}
+              </select>
+              <button class="btn text-xs" data-st-add-member>+ Add</button>
+            </div>
+          ` : ""}
+        </div>
+        <div class="card p-0 overflow-x-auto">
+          <table class="text-xs w-full">
+            <thead class="text-gray-500 text-left"><tr><th class="p-2">User ID</th><th class="p-2">Role</th><th class="p-2">Added</th><th></th></tr></thead>
+            <tbody>${members.map(memRow).join("") || `<tr><td colspan="4" class="p-3 text-center text-gray-500">No members yet.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-sm font-semibold">Roles (${roles.length})</div>
+          ${canManageRoles ? `<button class="btn text-xs" data-st-role-new>+ New role</button>` : ""}
+        </div>
+        <div class="card p-0 overflow-x-auto">
+          <table class="text-xs w-full">
+            <thead class="text-gray-500 text-left"><tr><th class="p-2">Name</th><th class="p-2">Permissions</th><th></th></tr></thead>
+            <tbody>${roles.map(roleRow).join("") || `<tr><td colspan="3" class="p-3 text-center text-gray-500">Loading…</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>`;
+  show("compose-modal");
+
+  const refresh = async () => { await loadActiveTeamData(); await loadActiveSubteamData(); renderSubteamManagerModal(); };
+
+  document.querySelector("[data-st-close]").onclick = () => {
+    hide("compose-modal");
+    state.activeSubteamId = null;
+    state.subteamMembers = []; state.subteamRoles = [];
+    renderActiveView();
+  };
+  const btnRename = document.querySelector("[data-st-rename]");
+  if (btnRename) btnRename.onclick = () => openSubteamRename();
+  const btnDelete = document.querySelector("[data-st-delete]");
+  if (btnDelete) btnDelete.onclick = () => deleteActiveSubteam();
+
+  const addUserSel = $("st-add-user"), addRoleSel = $("st-add-role");
+  const addBtn = document.querySelector("[data-st-add-member]");
+  if (addBtn) addBtn.onclick = async () => {
+    const uid = addUserSel && addUserSel.value;
+    const rid = addRoleSel && addRoleSel.value;
+    if (!uid) return toast("Select a workspace member", "err");
+    try {
+      await apiJson("POST",
+        `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}/members`,
+        { user_id: uid, role_id: rid });
+      toast("Member added");
+      await refresh();
+    } catch (e) { toast("Add failed: " + e.message, "err"); }
+  };
+
+  document.querySelectorAll("[data-st-role-change]").forEach(el => el.onchange = async (e) => {
+    const memberId = el.dataset.stRoleChange;
+    const roleId = e.target.value;
+    try {
+      await apiJson("PATCH",
+        `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}/members/${encodeURIComponent(memberId)}`,
+        { role_id: roleId });
+      toast("Role updated");
+      await refresh();
+    } catch (err) { toast("Update failed: " + err.message, "err"); }
+  });
+
+  document.querySelectorAll("[data-st-remove-member]").forEach(el => el.onclick = async () => {
+    const memberId = el.dataset.stRemoveMember;
+    const m = (state.subteamMembers || []).find(x => x.id === memberId);
+    const isSelf = m && m.user_id === state.session?.user?.id;
+    if (!confirm(isSelf ? "Leave this team?" : "Remove this member from team?")) return;
+    try {
+      await apiJson("DELETE",
+        `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}/members/${encodeURIComponent(memberId)}`);
+      toast(isSelf ? "Left team" : "Removed");
+      if (isSelf) {
+        hide("compose-modal");
+        state.activeSubteamId = null;
+        await loadActiveTeamData();
+        renderActiveView();
+        return;
+      }
+      await refresh();
+    } catch (e) { toast("Failed: " + e.message, "err"); }
+  });
+
+  const btnRoleNew = document.querySelector("[data-st-role-new]");
+  if (btnRoleNew) btnRoleNew.onclick = () => openSubteamRoleEditor(null);
+  document.querySelectorAll("[data-st-edit-role]").forEach(el => el.onclick = () => openSubteamRoleEditor(el.dataset.stEditRole));
+  document.querySelectorAll("[data-st-delete-role]").forEach(el => el.onclick = () => deleteSubteamRole(el.dataset.stDeleteRole));
+}
+
+function openSubteamRename() {
+  const st = (state.subteams || []).find(x => x.id === state.activeSubteamId);
+  if (!st) return;
+  $("compose-title").textContent = `Rename team · ${st.name}`;
+  $("compose-body").innerHTML = `
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-500">Team name</label>
+        <input id="rst-name" class="input" value="${esc(st.name)}" />
+      </div>
+      <div>
+        <label class="text-xs text-gray-500">Description</label>
+        <input id="rst-desc" class="input" value="${esc(st.description || "")}" />
+      </div>
+      <div class="flex gap-2 justify-end">
+        <button id="rst-cancel" class="btn-ghost">Cancel</button>
+        <button id="rst-save" class="btn">Save</button>
+      </div>
+    </div>`;
+  show("compose-modal");
+  $("rst-cancel").onclick = () => openSubteamManager(state.activeSubteamId);
+  $("rst-save").onclick = async () => {
+    const name = $("rst-name").value.trim();
+    const description = $("rst-desc").value.trim();
+    if (!name) return toast("Name required", "err");
+    try {
+      await apiJson("PATCH",
+        `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}`,
+        { name, description });
+      toast("Renamed");
+      await loadActiveTeamData();
+      openSubteamManager(state.activeSubteamId);
+    } catch (e) { toast("Rename failed: " + e.message, "err"); }
+  };
+}
+
+async function deleteActiveSubteam() {
+  const st = (state.subteams || []).find(x => x.id === state.activeSubteamId);
+  if (!st) return;
+  if (!confirm(`Delete team "${st.name}"? All team members and custom roles will be removed. Cannot be undone.`)) return;
+  try {
+    await apiJson("DELETE",
+      `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}`);
+    toast("Team deleted");
+    hide("compose-modal");
+    state.activeSubteamId = null;
+    state.subteamMembers = []; state.subteamRoles = [];
+    await loadActiveTeamData();
+    renderActiveView();
+  } catch (e) { toast("Delete failed: " + e.message, "err"); }
+}
+
+function openSubteamRoleEditor(roleId) {
+  const editing = roleId ? (state.subteamRoles || []).find(r => r.id === roleId) || {} : {};
+  const p = editing.permissions || { view_team_content: true };
+  const isOwnerRole = editing.is_system && editing.name === "Team Admin";
+  const permCheck = (key, label, hint) => `
+    <label class="flex items-start gap-2 p-2 rounded card">
+      <input type="checkbox" id="str-${key}" ${p[key] ? "checked" : ""} ${isOwnerRole ? "disabled" : ""} />
+      <span>
+        <div class="text-xs font-medium">${esc(label)}</div>
+        <div class="text-[10px] text-gray-500">${esc(hint)}</div>
+      </span>
+    </label>`;
+  $("compose-title").textContent = roleId ? `Edit team role · ${editing.name || ""}` : "New team role";
+  $("compose-body").innerHTML = `
+    <div class="space-y-3">
+      <div>
+        <label class="text-xs text-gray-500">Role name</label>
+        <input id="str-name" class="input" value="${esc(editing.name || "")}" ${editing.is_system ? "disabled" : ""} />
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        ${permCheck("team_admin", "Team Admin", "Full control of this team (implies every other permission)")}
+        ${permCheck("manage_team_members", "Manage members", "Add, remove, change roles for team members")}
+        ${permCheck("manage_team_roles", "Manage roles", "Create, edit, delete custom team roles")}
+        ${permCheck("edit_team_content", "Edit content", "Modify team-owned data")}
+        ${permCheck("view_team_content", "View content", "Read-only access to team data")}
+      </div>
+      <label class="flex items-center gap-2 text-xs">
+        <input type="checkbox" id="str-default" ${editing.is_default ? "checked" : ""} />
+        <span>Default role for new team members</span>
+      </label>
+      <div class="flex gap-2 justify-end">
+        <button id="str-cancel" class="btn-ghost">Cancel</button>
+        <button id="str-save" class="btn">${roleId ? "Save" : "Create"}</button>
+      </div>
+    </div>`;
+  show("compose-modal");
+  $("str-cancel").onclick = () => openSubteamManager(state.activeSubteamId);
+  $("str-save").onclick = async () => {
+    const payload = {
+      name: $("str-name").value.trim(),
+      permissions: {
+        team_admin: $("str-team_admin").checked,
+        manage_team_members: $("str-manage_team_members").checked,
+        manage_team_roles: $("str-manage_team_roles").checked,
+        edit_team_content: $("str-edit_team_content").checked,
+        view_team_content: $("str-view_team_content").checked,
+      },
+      is_default: $("str-default").checked,
+    };
+    if (!payload.name) return toast("Role name required", "err");
+    try {
+      const base = `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}/roles`;
+      if (roleId) {
+        await apiJson("PATCH", `${base}/${encodeURIComponent(roleId)}`, payload);
+      } else {
+        await apiJson("POST", base, payload);
+      }
+      toast("Role saved");
+      openSubteamManager(state.activeSubteamId);
+    } catch (e) { toast("Save failed: " + e.message, "err"); }
+  };
+}
+
+async function deleteSubteamRole(roleId) {
+  const r = (state.subteamRoles || []).find(x => x.id === roleId);
+  if (!r) return;
+  if (r.is_system) return toast("System roles cannot be deleted", "err");
+  if (!confirm(`Delete team role "${r.name}"? Members on this role will be reassigned to the default.`)) return;
+  try {
+    await apiJson("DELETE",
+      `/api/v2/workspaces/${encodeURIComponent(state.activeTeamId)}/teams/${encodeURIComponent(state.activeSubteamId)}/roles/${encodeURIComponent(roleId)}`);
+    toast("Role deleted");
+    openSubteamManager(state.activeSubteamId);
+  } catch (e) { toast("Delete failed: " + e.message, "err"); }
 }
 
 function openTeamCreate() {
@@ -2350,6 +2784,10 @@ function wireViewHandlers() {
   document.querySelectorAll("[data-remove-member]").forEach(el => el.onclick = () => removeMember(el.dataset.removeMember));
   document.querySelectorAll("[data-copy-invite]").forEach(el => el.onclick = () => { navigator.clipboard.writeText(el.dataset.copyInvite); toast("Link copied"); });
   document.querySelectorAll("[data-revoke-invite]").forEach(el => el.onclick = () => revokeInvite(el.dataset.revokeInvite));
+
+  // Sub-teams: create new, manage existing
+  const stNew = document.querySelector("[data-subteam-new]"); if (stNew) stNew.onclick = openSubteamCreate;
+  document.querySelectorAll("[data-subteam-manage]").forEach(el => el.onclick = () => openSubteamManager(el.dataset.subteamManage));
 
   // Graph: filter toggles + reset + fit
   ["g-show-broker","g-show-deal","g-show-market","g-show-asset","g-show-coco"].forEach(id => { const el = $(id); if (el) el.onchange = applyGraphFilters; });
