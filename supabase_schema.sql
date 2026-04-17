@@ -343,3 +343,115 @@ create trigger trg_teams_updated_at
   before update on public.teams
   for each row execute procedure update_updated_at();
 
+-- =============================================================
+-- WORKSPACE > TEAMS (sub-teams inside a workspace)
+-- The existing `teams` table now acts as the top-level WORKSPACE.
+-- `workspace_teams` are sub-groups within a workspace (e.g.
+-- "Acquisitions", "Asset Management", "Dispositions") with their
+-- own members and roles. A user must be a workspace member before
+-- they can be added to a sub-team in that workspace.
+-- =============================================================
+create table if not exists public.workspace_teams (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id uuid not null references public.teams(id) on delete cascade,
+  name text not null,
+  description text,
+  created_by uuid references auth.users(id),
+  created_at timestamptz default now(),
+  updated_at timestamptz default now(),
+  unique(workspace_id, name)
+);
+
+create index if not exists idx_workspace_teams_workspace on public.workspace_teams(workspace_id);
+
+-- =============================================================
+-- workspace_team_roles — preset + custom roles per sub-team.
+-- permissions jsonb flags:
+--   { "team_admin": true, "manage_team_members": true,
+--     "manage_team_roles": true, "edit_team_content": true,
+--     "view_team_content": true }
+-- =============================================================
+create table if not exists public.workspace_team_roles (
+  id uuid primary key default gen_random_uuid(),
+  team_id uuid not null references public.workspace_teams(id) on delete cascade,
+  name text not null,
+  permissions jsonb not null default '{}'::jsonb,
+  is_default boolean default false,
+  is_system boolean default false,
+  created_at timestamptz default now(),
+  unique(team_id, name)
+);
+
+create index if not exists idx_workspace_team_roles_team on public.workspace_team_roles(team_id);
+
+-- =============================================================
+-- workspace_team_members — user ↔ sub-team ↔ role
+-- =============================================================
+create table if not exists public.workspace_team_members (
+  id uuid primary key default gen_random_uuid(),
+  team_id uuid not null references public.workspace_teams(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  role_id uuid references public.workspace_team_roles(id) on delete set null,
+  added_by uuid references auth.users(id),
+  added_at timestamptz default now(),
+  unique(team_id, user_id)
+);
+
+create index if not exists idx_workspace_team_members_team on public.workspace_team_members(team_id);
+create index if not exists idx_workspace_team_members_user on public.workspace_team_members(user_id);
+
+-- =============================================================
+-- RLS — read-only for members; writes go through backend (service role)
+-- =============================================================
+alter table public.workspace_teams enable row level security;
+alter table public.workspace_team_roles enable row level security;
+alter table public.workspace_team_members enable row level security;
+
+create policy "workspace_teams: workspace member read"
+  on public.workspace_teams for select
+  using (
+    exists (
+      select 1 from public.team_members tm
+      where tm.team_id = workspace_teams.workspace_id and tm.user_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.teams t
+      where t.id = workspace_teams.workspace_id and t.owner_id = auth.uid()
+    )
+  );
+
+create policy "workspace_team_roles: workspace member read"
+  on public.workspace_team_roles for select
+  using (
+    exists (
+      select 1 from public.workspace_teams wt
+      join public.team_members tm on tm.team_id = wt.workspace_id
+      where wt.id = workspace_team_roles.team_id and tm.user_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.workspace_teams wt
+      join public.teams t on t.id = wt.workspace_id
+      where wt.id = workspace_team_roles.team_id and t.owner_id = auth.uid()
+    )
+  );
+
+create policy "workspace_team_members: workspace member read"
+  on public.workspace_team_members for select
+  using (
+    exists (
+      select 1 from public.workspace_teams wt
+      join public.team_members tm on tm.team_id = wt.workspace_id
+      where wt.id = workspace_team_members.team_id and tm.user_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.workspace_teams wt
+      join public.teams t on t.id = wt.workspace_id
+      where wt.id = workspace_team_members.team_id and t.owner_id = auth.uid()
+    )
+  );
+
+drop trigger if exists trg_workspace_teams_updated_at on public.workspace_teams;
+create trigger trg_workspace_teams_updated_at
+  before update on public.workspace_teams
+  for each row execute procedure update_updated_at();
+
