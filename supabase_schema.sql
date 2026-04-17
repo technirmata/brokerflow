@@ -195,3 +195,151 @@ drop trigger if exists trg_on_auth_user_created on auth.users;
 create trigger trg_on_auth_user_created
   after insert on auth.users
   for each row execute procedure public.handle_new_user();
+
+-- =============================================================
+-- TEAMS / WORKSPACES
+-- Multi-tenant collaboration: owner creates team, invites members,
+-- assigns roles with custom permissions. Backend enforces permission
+-- checks (RLS here is minimal — member can read their own team row).
+-- =============================================================
+create table if not exists public.teams (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  slug text unique,
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index if not exists idx_teams_owner on public.teams(owner_id);
+
+-- =============================================================
+-- team_roles — role definitions per team (admin, member, viewer, custom)
+-- permissions is a jsonb flag bag:
+--   { "admin": true, "manage_members": true, "manage_roles": true,
+--     "manage_deals": true, "view_analytics": true }
+-- =============================================================
+create table if not exists public.team_roles (
+  id uuid primary key default gen_random_uuid(),
+  team_id uuid not null references public.teams(id) on delete cascade,
+  name text not null,
+  permissions jsonb not null default '{}'::jsonb,
+  is_default boolean default false,
+  is_system boolean default false,          -- Owner/Admin/Member cannot be deleted
+  created_at timestamptz default now(),
+  unique(team_id, name)
+);
+
+create index if not exists idx_team_roles_team on public.team_roles(team_id);
+
+-- =============================================================
+-- team_members — user ↔ team ↔ role
+-- =============================================================
+create table if not exists public.team_members (
+  id uuid primary key default gen_random_uuid(),
+  team_id uuid not null references public.teams(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  role_id uuid references public.team_roles(id) on delete set null,
+  added_by uuid references auth.users(id),
+  added_at timestamptz default now(),
+  unique(team_id, user_id)
+);
+
+create index if not exists idx_team_members_team on public.team_members(team_id);
+create index if not exists idx_team_members_user on public.team_members(user_id);
+
+-- =============================================================
+-- team_invitations — pending invites by email with a one-time token
+-- =============================================================
+create table if not exists public.team_invitations (
+  id uuid primary key default gen_random_uuid(),
+  team_id uuid not null references public.teams(id) on delete cascade,
+  email text not null,
+  role_id uuid references public.team_roles(id) on delete set null,
+  token text not null unique,
+  invited_by uuid references auth.users(id),
+  expires_at timestamptz not null default (now() + interval '14 days'),
+  accepted_at timestamptz,
+  accepted_by uuid references auth.users(id),
+  revoked_at timestamptz,
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_team_invitations_team on public.team_invitations(team_id);
+create index if not exists idx_team_invitations_email on public.team_invitations(lower(email));
+create index if not exists idx_team_invitations_token on public.team_invitations(token);
+
+-- =============================================================
+-- RLS — minimal here; backend enforces fine-grained perms
+-- Members can read their team, its roles, its member list, and
+-- their own invitations. Writes go through backend (service role).
+-- =============================================================
+alter table public.teams enable row level security;
+alter table public.team_roles enable row level security;
+alter table public.team_members enable row level security;
+alter table public.team_invitations enable row level security;
+
+create policy "teams: member read"
+  on public.teams for select
+  using (
+    owner_id = auth.uid()
+    or exists (
+      select 1 from public.team_members tm
+      where tm.team_id = teams.id and tm.user_id = auth.uid()
+    )
+  );
+
+create policy "teams: owner insert"
+  on public.teams for insert
+  with check (owner_id = auth.uid());
+
+create policy "teams: owner update"
+  on public.teams for update
+  using (owner_id = auth.uid());
+
+create policy "team_roles: member read"
+  on public.team_roles for select
+  using (
+    exists (
+      select 1 from public.team_members tm
+      where tm.team_id = team_roles.team_id and tm.user_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.teams t
+      where t.id = team_roles.team_id and t.owner_id = auth.uid()
+    )
+  );
+
+create policy "team_members: same-team read"
+  on public.team_members for select
+  using (
+    user_id = auth.uid()
+    or exists (
+      select 1 from public.team_members tm2
+      where tm2.team_id = team_members.team_id and tm2.user_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.teams t
+      where t.id = team_members.team_id and t.owner_id = auth.uid()
+    )
+  );
+
+create policy "team_invitations: addressee read"
+  on public.team_invitations for select
+  using (
+    lower(email) = lower(coalesce((auth.jwt() ->> 'email'), ''))
+    or exists (
+      select 1 from public.team_members tm
+      where tm.team_id = team_invitations.team_id and tm.user_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.teams t
+      where t.id = team_invitations.team_id and t.owner_id = auth.uid()
+    )
+  );
+
+drop trigger if exists trg_teams_updated_at on public.teams;
+create trigger trg_teams_updated_at
+  before update on public.teams
+  for each row execute procedure update_updated_at();
+
