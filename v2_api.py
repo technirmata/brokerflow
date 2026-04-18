@@ -2945,6 +2945,18 @@ async def _enrich_members_with_identity(rows: list[dict]) -> list[dict]:
 
 # ---------- Permission helpers ----------
 
+# =================================================================
+# Unified role catalog — one list per workspace held in public.team_roles.
+# Each role carries BOTH scopes of permissions:
+#   * permissions      — workspace-scope (admin/manage_members/manage_roles/
+#                       manage_deals/view_analytics)
+#   * team_permissions — sub-team-scope (team_admin/manage_team_members/
+#                       manage_team_roles/edit_team_content/view_team_content)
+# Mirror rows in public.workspace_team_roles are kept in sync by
+# _mirror_catalog_role_to_subteams / _unmirror_catalog_role on every write
+# so sub-team dropdowns always show the same role list as the workspace.
+# =================================================================
+
 DEFAULT_ROLES = [
     {
         "name": "Owner",
@@ -2956,6 +2968,13 @@ DEFAULT_ROLES = [
             "manage_roles": True,
             "manage_deals": True,
             "view_analytics": True,
+        },
+        "team_permissions": {
+            "team_admin": True,
+            "manage_team_members": True,
+            "manage_team_roles": True,
+            "edit_team_content": True,
+            "view_team_content": True,
         },
     },
     {
@@ -2969,6 +2988,32 @@ DEFAULT_ROLES = [
             "manage_deals": True,
             "view_analytics": True,
         },
+        "team_permissions": {
+            "team_admin": True,
+            "manage_team_members": True,
+            "manage_team_roles": True,
+            "edit_team_content": True,
+            "view_team_content": True,
+        },
+    },
+    {
+        "name": "Team Admin",
+        "is_system": True,
+        "is_default": False,
+        "permissions": {
+            "admin": False,
+            "manage_members": False,
+            "manage_roles": False,
+            "manage_deals": False,
+            "view_analytics": False,
+        },
+        "team_permissions": {
+            "team_admin": True,
+            "manage_team_members": True,
+            "manage_team_roles": True,
+            "edit_team_content": True,
+            "view_team_content": True,
+        },
     },
     {
         "name": "Role 1",
@@ -2980,6 +3025,13 @@ DEFAULT_ROLES = [
             "manage_roles": False,
             "manage_deals": False,
             "view_analytics": False,
+        },
+        "team_permissions": {
+            "team_admin": False,
+            "manage_team_members": False,
+            "manage_team_roles": False,
+            "edit_team_content": False,
+            "view_team_content": False,
         },
     },
     {
@@ -2993,6 +3045,13 @@ DEFAULT_ROLES = [
             "manage_deals": False,
             "view_analytics": False,
         },
+        "team_permissions": {
+            "team_admin": False,
+            "manage_team_members": False,
+            "manage_team_roles": False,
+            "edit_team_content": False,
+            "view_team_content": False,
+        },
     },
     {
         "name": "Role 3",
@@ -3004,6 +3063,13 @@ DEFAULT_ROLES = [
             "manage_roles": False,
             "manage_deals": False,
             "view_analytics": False,
+        },
+        "team_permissions": {
+            "team_admin": False,
+            "manage_team_members": False,
+            "manage_team_roles": False,
+            "edit_team_content": False,
+            "view_team_content": False,
         },
     },
 ]
@@ -3062,6 +3128,13 @@ async def _require_perm(
 
 
 async def _ensure_default_roles(team_id: str) -> list[dict]:
+    """Ensure every workspace has the six system/default catalog roles
+    (Owner, Admin, Team Admin, Role 1/2/3). Idempotent — inserts any missing
+    rows; existing rows are left intact (including user customizations).
+    Each catalog row carries BOTH workspace-scope permissions and
+    sub-team-scope team_permissions. After ensuring the catalog, mirror
+    every role into every existing sub-team so sub-team dropdowns match.
+    """
     existing = await _svc_select(
         "team_roles", {"team_id": f"eq.{team_id}", "select": "*"}
     )
@@ -3071,6 +3144,7 @@ async def _ensure_default_roles(team_id: str) -> list[dict]:
             "team_id": team_id,
             "name": r["name"],
             "permissions": r["permissions"],
+            "team_permissions": r["team_permissions"],
             "is_default": r["is_default"],
             "is_system": r["is_system"],
         }
@@ -3080,7 +3154,119 @@ async def _ensure_default_roles(team_id: str) -> list[dict]:
     if to_insert:
         inserted = await _svc_insert("team_roles", to_insert)
         existing = existing + inserted
+    # Mirror the full catalog into every sub-team under this workspace so
+    # sub-team role dropdowns show the unified list.
+    for role in existing:
+        await _mirror_catalog_role_to_subteams(
+            workspace_id=team_id,
+            role_name=role["name"],
+            team_permissions=role.get("team_permissions") or {},
+            is_system=bool(role.get("is_system")),
+            is_default=bool(role.get("is_default")),
+        )
     return existing
+
+
+async def _mirror_catalog_role_to_subteams(
+    workspace_id: str,
+    role_name: str,
+    team_permissions: dict,
+    is_system: bool,
+    is_default: bool,
+) -> None:
+    """For every sub-team under `workspace_id`, ensure a
+    workspace_team_roles row exists with this name. If present, update its
+    permissions / flags to match the catalog. If absent, insert it.
+    Mirror rows share the same NAME as the catalog, but each sub-team has
+    its own id (existing member rows reference those ids).
+    """
+    subteams = await _svc_select(
+        "workspace_teams",
+        {"workspace_id": f"eq.{workspace_id}", "select": "id"},
+    )
+    if not subteams:
+        return
+    payload = team_permissions or {}
+    for st in subteams:
+        existing = await _svc_select(
+            "workspace_team_roles",
+            {
+                "team_id": f"eq.{st['id']}",
+                "name": f"eq.{role_name}",
+                "select": "id",
+                "limit": "1",
+            },
+        )
+        if existing:
+            await _svc_update(
+                "workspace_team_roles",
+                {"id": f"eq.{existing[0]['id']}"},
+                {
+                    "permissions": payload,
+                    "is_system": is_system,
+                    "is_default": is_default,
+                },
+            )
+        else:
+            await _svc_insert(
+                "workspace_team_roles",
+                {
+                    "team_id": st["id"],
+                    "name": role_name,
+                    "permissions": payload,
+                    "is_system": is_system,
+                    "is_default": is_default,
+                },
+            )
+
+
+async def _unmirror_catalog_role(workspace_id: str, role_name: str) -> None:
+    """Delete the mirror row for `role_name` in every sub-team under
+    `workspace_id`. Before deleting, reassign any sub-team members on that
+    role to the sub-team's default role so we don't strand them.
+    """
+    subteams = await _svc_select(
+        "workspace_teams",
+        {"workspace_id": f"eq.{workspace_id}", "select": "id"},
+    )
+    for st in subteams:
+        mirror = await _svc_select(
+            "workspace_team_roles",
+            {
+                "team_id": f"eq.{st['id']}",
+                "name": f"eq.{role_name}",
+                "select": "id",
+                "limit": "1",
+            },
+        )
+        if not mirror:
+            continue
+        role_id = mirror[0]["id"]
+        # Find a fallback role in this sub-team (default → Admin → any other)
+        others = await _svc_select(
+            "workspace_team_roles",
+            {"team_id": f"eq.{st['id']}", "select": "*"},
+        )
+        fallback = next(
+            (r for r in others if r.get("is_default") and r["id"] != role_id),
+            next(
+                (r for r in others if r["name"] == "Admin" and r["id"] != role_id),
+                next((r for r in others if r["id"] != role_id), None),
+            ),
+        )
+        if fallback:
+            await _svc_update(
+                "workspace_team_members",
+                {
+                    "team_id": f"eq.{st['id']}",
+                    "role_id": f"eq.{role_id}",
+                },
+                {"role_id": fallback["id"]},
+            )
+        await _svc_delete(
+            "workspace_team_roles",
+            {"id": f"eq.{role_id}", "team_id": f"eq.{st['id']}"},
+        )
 
 
 # ---------- Team CRUD ----------
@@ -3284,15 +3470,27 @@ async def v2_roles_create(
     perms = (payload or {}).get("permissions") or {}
     if not isinstance(perms, dict):
         raise HTTPException(400, "permissions must be an object")
+    team_perms = (payload or {}).get("team_permissions") or {}
+    if not isinstance(team_perms, dict):
+        raise HTTPException(400, "team_permissions must be an object")
     rows = await _svc_insert(
         "team_roles",
         {
             "team_id": team_id,
             "name": name,
             "permissions": perms,
+            "team_permissions": team_perms,
             "is_default": False,
             "is_system": False,
         },
+    )
+    # Mirror the new catalog role into every sub-team under this workspace.
+    await _mirror_catalog_role_to_subteams(
+        workspace_id=team_id,
+        role_name=name,
+        team_permissions=team_perms,
+        is_system=False,
+        is_default=False,
     )
     return {"role": rows[0] if rows else None}
 
@@ -3321,6 +3519,10 @@ async def v2_roles_update(
         updates["name"] = str(payload["name"]).strip()
     if "permissions" in payload and isinstance(payload["permissions"], dict):
         updates["permissions"] = payload["permissions"]
+    if "team_permissions" in payload and isinstance(
+        payload["team_permissions"], dict
+    ):
+        updates["team_permissions"] = payload["team_permissions"]
     if "is_default" in payload:
         updates["is_default"] = bool(payload["is_default"])
     if not updates:
@@ -3330,7 +3532,24 @@ async def v2_roles_update(
         {"id": f"eq.{role_id}", "team_id": f"eq.{team_id}"},
         updates,
     )
-    return {"role": rows[0] if rows else None}
+    updated = rows[0] if rows else role
+    # If the role was renamed, remove mirror rows under the OLD name first
+    # so they don't orphan. The mirror helper below then re-creates rows
+    # under the NEW name in every sub-team.
+    old_name = role.get("name")
+    new_name = updated.get("name") or old_name
+    if old_name and old_name != new_name:
+        await _unmirror_catalog_role(team_id, old_name)
+    # Mirror the (possibly-renamed / repermed) catalog row into every
+    # sub-team so mirror perms / flags stay in sync with the catalog.
+    await _mirror_catalog_role_to_subteams(
+        workspace_id=team_id,
+        role_name=new_name,
+        team_permissions=updated.get("team_permissions") or {},
+        is_system=bool(updated.get("is_system")),
+        is_default=bool(updated.get("is_default")),
+    )
+    return {"role": updated}
 
 
 @router.delete("/teams/{team_id}/roles/{role_id}")
@@ -3369,6 +3588,9 @@ async def v2_roles_delete(
     await _svc_delete(
         "team_roles", {"id": f"eq.{role_id}", "team_id": f"eq.{team_id}"}
     )
+    # Remove the mirror of this role from every sub-team and reassign any
+    # sub-team members on it to the sub-team's fallback role.
+    await _unmirror_catalog_role(team_id, role.get("name") or "")
     return {"ok": True}
 
 
@@ -3958,21 +4180,56 @@ async def _get_subteam_membership(team_id: str, user_id: str) -> dict | None:
 
 
 async def _ensure_default_subteam_roles(team_id: str) -> list[dict]:
+    """Seed a new sub-team's role mirror from its parent workspace's
+    unified catalog (public.team_roles). Each catalog row yields one
+    mirror row in public.workspace_team_roles whose `permissions` column
+    holds the catalog row's `team_permissions` (sub-team scope). Falls
+    back to DEFAULT_SUBTEAM_ROLES only if the parent workspace has no
+    catalog yet (shouldn't happen after first run, but safe).
+    """
+    subteam = await _svc_select(
+        "workspace_teams",
+        {"id": f"eq.{team_id}", "select": "workspace_id", "limit": "1"},
+    )
+    workspace_id = subteam[0]["workspace_id"] if subteam else None
+
     existing = await _svc_select(
         "workspace_team_roles", {"team_id": f"eq.{team_id}", "select": "*"}
     )
     existing_names = {r["name"] for r in existing}
-    to_insert = [
-        {
-            "team_id": team_id,
-            "name": r["name"],
-            "permissions": r["permissions"],
-            "is_default": r["is_default"],
-            "is_system": r["is_system"],
-        }
-        for r in DEFAULT_SUBTEAM_ROLES
-        if r["name"] not in existing_names
-    ]
+
+    # Pull the parent workspace's unified catalog.
+    catalog: list[dict] = []
+    if workspace_id:
+        catalog = await _svc_select(
+            "team_roles", {"team_id": f"eq.{workspace_id}", "select": "*"}
+        )
+
+    if catalog:
+        to_insert = [
+            {
+                "team_id": team_id,
+                "name": r["name"],
+                "permissions": r.get("team_permissions") or {},
+                "is_default": bool(r.get("is_default")),
+                "is_system": bool(r.get("is_system")),
+            }
+            for r in catalog
+            if r["name"] not in existing_names
+        ]
+    else:
+        # Fallback — workspace has no catalog yet (first-run edge case).
+        to_insert = [
+            {
+                "team_id": team_id,
+                "name": r["name"],
+                "permissions": r["permissions"],
+                "is_default": r["is_default"],
+                "is_system": r["is_system"],
+            }
+            for r in DEFAULT_SUBTEAM_ROLES
+            if r["name"] not in existing_names
+        ]
     if to_insert:
         inserted = await _svc_insert("workspace_team_roles", to_insert)
         existing = existing + inserted
