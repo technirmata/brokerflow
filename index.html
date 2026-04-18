@@ -2138,11 +2138,14 @@ function tplTeamTwoPane(active) {
 
   const countPerTeam = (stid) => (wsp.people || []).filter(p => (p.teams || []).some(t => t.team_id === stid)).length;
 
+  const rolesCount = (state.teamRoles || []).length;
+
   const rail = `
     <aside class="bf-rail">
       <div class="bf-rail-section">
         <div class="bf-rail-header">Directory</div>
         ${railItem("all", "All people", allCount, "👥")}
+        ${railItem("roles", "Roles", rolesCount, "⚑")}
       </div>
       <div class="bf-rail-section">
         <div class="bf-rail-header">Teams · ${subteams.length}</div>
@@ -2154,6 +2157,8 @@ function tplTeamTwoPane(active) {
   let pane;
   if (sel === "all") {
     pane = tplPeoplePaneAll(active, wsp);
+  } else if (sel === "roles") {
+    pane = tplRolesPane(active);
   } else {
     const st = subteams.find(s => s.id === sel);
     if (!st) {
@@ -2166,6 +2171,66 @@ function tplTeamTwoPane(active) {
   }
 
   return `<div class="bf-teamtab">${rail}<section class="bf-pane">${pane}</section></div>`;
+}
+
+/* ---------- Roles pane (unified catalog — one list per workspace) ---------- */
+
+function tplRolesPane(active) {
+  const perms = active.permissions || {};
+  const canManage = !!(active.is_owner || perms.admin || perms.manage_roles);
+  const roles = state.teamRoles || [];
+
+  const flagList = (obj, keys) => {
+    const on = keys.filter(k => obj && obj[k]);
+    return on.length ? on.join(", ") : "—";
+  };
+  const wsKeys = ["admin", "manage_members", "manage_roles", "manage_deals", "view_analytics"];
+  const tmKeys = ["team_admin", "manage_team_members", "manage_team_roles", "edit_team_content", "view_team_content"];
+
+  const card = (r) => {
+    const isOwner = r.is_system && r.name === "Owner";
+    const canEdit = canManage && !isOwner;
+    const canDelete = canManage && !r.is_system;
+    return `
+      <div class="card p-3 space-y-2">
+        <div class="flex items-center gap-2">
+          <span class="font-medium">${esc(r.name)}</span>
+          ${r.is_system ? `<span class="pill pill-muted text-[10px]">system</span>` : ""}
+          ${r.is_default ? `<span class="pill pill-ok text-[10px]">default</span>` : ""}
+          <div class="ml-auto flex gap-1">
+            ${canEdit ? `<button class="btn-ghost text-xs" data-edit-role="${esc(r.id)}">Edit</button>` : ""}
+            ${canDelete ? `<button class="btn-danger text-xs" data-delete-role="${esc(r.id)}">Delete</button>` : ""}
+          </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+          <div class="card p-2">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Workspace perms</div>
+            <div class="text-gray-300">${esc(flagList(r.permissions, wsKeys))}</div>
+          </div>
+          <div class="card p-2">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Team perms</div>
+            <div class="text-gray-300">${esc(flagList(r.team_permissions, tmKeys))}</div>
+          </div>
+        </div>
+      </div>`;
+  };
+
+  const header = `
+    <div class="bf-pane-header">
+      <div>
+        <div class="bf-pane-title">Roles · ${roles.length}</div>
+        <div class="bf-pane-sub">One role list per workspace. Each role carries both workspace-scope and team-scope permissions. Any change here is mirrored into every team automatically.</div>
+      </div>
+      <div class="flex gap-2">
+        ${canManage ? `<button class="btn text-xs" data-role-new>+ New role</button>` : ""}
+      </div>
+    </div>`;
+
+  const body = roles.length
+    ? `<div class="bf-pane-body"><div class="space-y-2">${roles.map(card).join("")}</div></div>`
+    : `<div class="bf-pane-body"><div class="card p-6 text-center text-xs text-gray-500">No roles yet.</div></div>`;
+
+  return header + body;
 }
 
 /* ---------- All-people pane ---------- */
@@ -2421,10 +2486,10 @@ function bindTeamTabDiscord() {
     el.onclick = () => {
       const key = el.dataset.rail;
       state.teamPaneSel = key;
-      if (key !== "all" && state.activeSubteamId !== key) {
-        // Switching to a different sub-team — invalidate cached members
-        // via the load-tracking flag (NOT activeSubteamId, which stays in
-        // sync for the sidebar selector).
+      // "all" and "roles" are top-level panes, not sub-teams — don't touch
+      // activeSubteamId. For any other key we're switching to a sub-team:
+      // invalidate the cached members flag so tplPeoplePaneSubteam refetches.
+      if (key !== "all" && key !== "roles" && state.activeSubteamId !== key) {
         state.activeSubteamId = key;
         state._loadedSubteamId = null;
       }
@@ -2994,14 +3059,12 @@ function renderSubteamManagerModal() {
 
       <div>
         <div class="flex items-center justify-between mb-2">
-          <div class="text-sm font-semibold">Roles (${roles.length})</div>
-          ${canManageRoles ? `<button class="btn text-xs" data-st-role-new>+ New role</button>` : ""}
+          <div class="text-sm font-semibold">Roles</div>
         </div>
-        <div class="card p-0 overflow-x-auto">
-          <table class="text-xs w-full">
-            <thead class="text-gray-500 text-left"><tr><th class="p-2">Name</th><th class="p-2">Permissions</th><th></th></tr></thead>
-            <tbody>${roles.map(roleRow).join("") || `<tr><td colspan="3" class="p-3 text-center text-gray-500">Loading…</td></tr>`}</tbody>
-          </table>
+        <div class="card p-3 text-xs text-gray-400">
+          Roles are now <b>shared across the whole workspace</b>. Edit this workspace's role catalog in
+          <button class="btn-ghost text-xs" data-st-open-ws-roles>Settings → Team → Roles</button>.
+          Any change you make there is mirrored into every team automatically.
         </div>
       </div>
     </div>`;
@@ -3072,6 +3135,19 @@ function renderSubteamManagerModal() {
   if (btnRoleNew) btnRoleNew.onclick = () => openSubteamRoleEditor(null);
   document.querySelectorAll("[data-st-edit-role]").forEach(el => el.onclick = () => openSubteamRoleEditor(el.dataset.stEditRole));
   document.querySelectorAll("[data-st-delete-role]").forEach(el => el.onclick = () => deleteSubteamRole(el.dataset.stDeleteRole));
+  const btnOpenWsRoles = document.querySelector("[data-st-open-ws-roles]");
+  if (btnOpenWsRoles) btnOpenWsRoles.onclick = () => {
+    hide("compose-modal");
+    state.activeSubteamId = null;
+    state.subteamMembers = []; state.subteamRoles = [];
+    state._loadedSubteamId = null;
+    // Route to Settings → Team → Directory (workspace role catalog lives there
+    // in the current UI; `openRoleEditor` is reachable from the Directory pane).
+    state.view = "admin";
+    state.adminTab = "team";
+    state.teamPaneSel = "roles";
+    renderActiveView();
+  };
 }
 
 async function deleteActiveSubteam() {
@@ -3381,10 +3457,20 @@ function openRoleEditor(roleId) {
   const t = state.teams.find(x => x.id === state.activeTeamId);
   if (!t) return;
   const editing = roleId ? (state.teamRoles.find(r => r.id === roleId) || {}) : {};
-  const p = editing.permissions || { view_analytics: true };
-  const permCheck = (key, label, hint) => `
+  const p = editing.permissions || {};
+  const tp = editing.team_permissions || {};
+  const ownerLocked = editing.is_system && editing.name === "Owner";
+  const wsCheck = (key, label, hint) => `
     <label class="flex items-start gap-2 p-2 rounded card">
-      <input type="checkbox" id="re-${key}" ${p[key] ? "checked" : ""} ${editing.is_system && editing.name === "Owner" ? "disabled" : ""} />
+      <input type="checkbox" id="re-ws-${key}" ${p[key] ? "checked" : ""} ${ownerLocked ? "disabled" : ""} />
+      <span>
+        <div class="text-xs font-medium">${esc(label)}</div>
+        <div class="text-[10px] text-gray-500">${esc(hint)}</div>
+      </span>
+    </label>`;
+  const teamCheck = (key, label, hint) => `
+    <label class="flex items-start gap-2 p-2 rounded card">
+      <input type="checkbox" id="re-tm-${key}" ${tp[key] ? "checked" : ""} ${ownerLocked ? "disabled" : ""} />
       <span>
         <div class="text-xs font-medium">${esc(label)}</div>
         <div class="text-[10px] text-gray-500">${esc(hint)}</div>
@@ -3392,18 +3478,37 @@ function openRoleEditor(roleId) {
     </label>`;
   $("compose-title").textContent = roleId ? `Edit role · ${editing.name || ""}` : "New role";
   $("compose-body").innerHTML = `
-    <div class="space-y-3">
+    <div class="space-y-4" style="max-height:75vh; overflow-y:auto;">
       <div>
         <label class="text-xs text-gray-500">Role name</label>
         <input id="re-name" class="input" value="${esc(editing.name || "")}" ${editing.is_system ? "disabled" : ""} />
+        <div class="text-[11px] text-gray-500 mt-1">One role list per workspace. Each role can be assigned at the workspace level or inside any team.</div>
       </div>
-      <div class="grid grid-cols-2 gap-2">
-        ${permCheck("admin", "Admin", "Full control (implies everything below)")}
-        ${permCheck("manage_members", "Manage members", "Invite, remove, change roles")}
-        ${permCheck("manage_roles", "Manage roles", "Create, edit, delete roles")}
-        ${permCheck("manage_deals", "Manage deals", "Create/edit deals & brokers")}
-        ${permCheck("view_analytics", "View analytics", "Dashboard, graph, heatmap, reports")}
+
+      <div>
+        <div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-1">Workspace permissions</div>
+        <div class="text-[11px] text-gray-500 mb-2">Apply when this role is assigned at the <b>workspace</b> level (Directory tab).</div>
+        <div class="grid grid-cols-2 gap-2">
+          ${wsCheck("admin", "Admin", "Full control of the workspace (implies everything below)")}
+          ${wsCheck("manage_members", "Manage members", "Invite, remove, change workspace roles")}
+          ${wsCheck("manage_roles", "Manage roles", "Create, edit, delete this role catalog")}
+          ${wsCheck("manage_deals", "Manage deals", "Create / edit deals & brokers")}
+          ${wsCheck("view_analytics", "View analytics", "Dashboard, graph, heatmap, reports")}
+        </div>
       </div>
+
+      <div>
+        <div class="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-1">Team permissions</div>
+        <div class="text-[11px] text-gray-500 mb-2">Apply when this role is assigned inside a <b>team</b> (sub-team membership).</div>
+        <div class="grid grid-cols-2 gap-2">
+          ${teamCheck("team_admin", "Team Admin", "Full control inside the team (implies everything below)")}
+          ${teamCheck("manage_team_members", "Manage team members", "Add, remove, change roles for team members")}
+          ${teamCheck("manage_team_roles", "Manage team roles", "Edit the workspace role catalog from inside a team")}
+          ${teamCheck("edit_team_content", "Edit team content", "Modify team-owned data")}
+          ${teamCheck("view_team_content", "View team content", "Read-only access to team data")}
+        </div>
+      </div>
+
       <label class="flex items-center gap-2 text-xs">
         <input type="checkbox" id="re-default" ${editing.is_default ? "checked" : ""} />
         <span>Default role for new members</span>
@@ -3419,11 +3524,18 @@ function openRoleEditor(roleId) {
     const payload = {
       name: $("re-name").value.trim(),
       permissions: {
-        admin: $("re-admin").checked,
-        manage_members: $("re-manage_members").checked,
-        manage_roles: $("re-manage_roles").checked,
-        manage_deals: $("re-manage_deals").checked,
-        view_analytics: $("re-view_analytics").checked,
+        admin: $("re-ws-admin").checked,
+        manage_members: $("re-ws-manage_members").checked,
+        manage_roles: $("re-ws-manage_roles").checked,
+        manage_deals: $("re-ws-manage_deals").checked,
+        view_analytics: $("re-ws-view_analytics").checked,
+      },
+      team_permissions: {
+        team_admin: $("re-tm-team_admin").checked,
+        manage_team_members: $("re-tm-manage_team_members").checked,
+        manage_team_roles: $("re-tm-manage_team_roles").checked,
+        edit_team_content: $("re-tm-edit_team_content").checked,
+        view_team_content: $("re-tm-view_team_content").checked,
       },
       is_default: $("re-default").checked,
     };
