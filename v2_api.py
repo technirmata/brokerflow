@@ -32,8 +32,51 @@ from auth import (
     SUPABASE_ANON_KEY,
 )
 
+from memory_integration import remember as mem_remember, recall as mem_recall, forget as mem_forget
+
 
 router = APIRouter(prefix="/api/v2")
+
+
+# =============================================================
+# Per-user memory (Zep Cloud)
+#
+# Every authenticated broker gets an isolated Zep graph scoped by
+# brokerflow.<supabase_user_id>. When ZEP_API_KEY isn't set, all three
+# endpoints silently no-op so missing creds never break the API.
+# =============================================================
+
+
+@router.post("/memory/remember")
+async def memory_remember(
+    payload: dict,
+    user: UserContext = Depends(get_current_user),
+):
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    metadata = payload.get("metadata") or None
+    mem_remember(user_id=user.user_id, body=text, metadata=metadata)
+    return {"ok": True}
+
+
+@router.get("/memory/recall")
+async def memory_recall(
+    q: str,
+    limit: int = 5,
+    user: UserContext = Depends(get_current_user),
+):
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="q is required")
+    hits = mem_recall(user_id=user.user_id, query=q, limit=limit)
+    return {"hits": hits}
+
+
+@router.delete("/memory")
+async def memory_forget(user: UserContext = Depends(get_current_user)):
+    """GDPR/account-delete path — remove every memory for the caller."""
+    mem_forget(user_id=user.user_id)
+    return {"ok": True}
 
 
 # =============================================================

@@ -6,3 +6,4 @@ pdfplumber==0.11.4
 python-dotenv==1.0.1
 PyJWT==2.9.0
 cryptography==43.0.1
+zep-cloud>=2.0.0

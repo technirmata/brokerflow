@@ -51,7 +51,33 @@ enforces isolation. The `JWT_SECRET` is server-only.
 
 That's it for the server side.
 
-## 5. (Optional) Enable Google sign-in
+## 5. (Optional) Enable per-user AI memory via Zep Cloud
+
+Every authenticated broker gets their own isolated Zep Cloud graph — facts,
+preferences, deal history. Powered by `memory_integration.py` and exposed at:
+
+- `POST /api/v2/memory/remember`  `{ "text": "...", "metadata": {...} }`
+- `GET  /api/v2/memory/recall?q=...&limit=5`
+- `DELETE /api/v2/memory`  (GDPR / account-delete path)
+
+**Set up once:**
+
+1. Sign up at <https://app.getzep.com> (free tier = 1,000 credits/mo, 2 projects).
+2. Create a project named `brokerflow-users` (separate from any personal Zep project).
+3. Generate an API key (`z_...`).
+4. Add to Render env:
+   ```
+   ZEP_API_KEY=z_...
+   ZEP_API_URL=https://api.getzep.com
+   MEMORY_ZEP_ENABLED=1
+   MEMORY_SAAS_NAMESPACE=brokerflow
+   ```
+5. Save — Render redeploys and the three endpoints start accepting calls.
+
+If `ZEP_API_KEY` is missing or `MEMORY_ZEP_ENABLED` is `0`, the endpoints no-op
+silently — safe to ship this feature disabled.
+
+## 6. (Optional) Enable Google sign-in
 
 If you want the "Continue with Google" button to work:
 
@@ -63,14 +89,14 @@ If you want the "Continue with Google" button to work:
 Email/password and anonymous (guest) login work out of the box with no extra
 config.
 
-## 6. (Optional) Email-confirmation vs instant signup
+## 7. (Optional) Email-confirmation vs instant signup
 
 By default, Supabase sends a confirmation email before a new account can log
 in. To skip that in development:
 
 - Supabase → **Authentication → Providers → Email → Confirm email = off**.
 
-## 7. First user walkthrough
+## 8. First user walkthrough
 
 1. Open the app — you'll land on the sign-in page.
 2. Create an account (or continue as guest).
@@ -85,7 +111,7 @@ in. To skip that in development:
 7. Each of these is optional — you can skip the wizard and fill them in later
    under **Settings**.
 
-## 8. Ongoing use
+## 9. Ongoing use
 
 - Every user sees only their own ClickUp data + touchpoints (RLS).
 - Touchpoints (every email/SMS/call/note) are logged in Supabase and show up
